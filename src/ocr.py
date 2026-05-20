@@ -1,15 +1,15 @@
-"""PaddleOCR 封装引擎。
+"""OCR 引擎调度器。
 
-提供延迟初始化单例、PDF 页→图像转换、OCR 结果→LineMeta 转换。
-所有 PaddleOCR / PyMuPDF / OpenCV 导入均为延迟的，无 OCR 依赖时不影响原有功能。
+根据设备性能自动选择 OCR 后端（PaddleOCR 高性能 或 RapidOCR 轻量版），
+也支持用户手动指定。提供统一的 OcrEngine 接口，对上层调用者透明。
 
-用法:
-    from src.ocr import OcrEngine, pdf_page_to_image, is_available
+公共 API 保持向后兼容：
+    from src.ocr import OcrEngine, pdf_page_to_image, page_has_text, is_available
 
-    if is_available():
-        engine = OcrEngine.get_instance()
-        image, dpi = pdf_page_to_image("民法典.pdf", page_index=0)
-        lines = engine.ocr_page(image, page_num=1, dpi=dpi)
+    engine = OcrEngine.get_instance()           # 自动选择后端
+    engine = OcrEngine.get_instance(backend="paddle")  # 强制 PaddleOCR
+    engine = OcrEngine.get_instance(backend="lite")    # 强制轻量版
+    lines = engine.ocr_page(image, page_num=1, dpi=300)
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from threading import Lock
 from typing import Optional
 
 from src.models import LineMeta
+from src.profiler import DeviceProfile, PerformanceTier, detect_device_profile, recommend_ocr_backend
 
 logger = logging.getLogger(__name__)
 
@@ -36,31 +37,25 @@ _MAX_IMAGE_PIXELS = 4000
 
 
 def is_available() -> bool:
-    """检查 PaddleOCR 依赖是否可导入（不触发初始化）。"""
-    try:
-        _ensure_torch_dll_path()
-        import paddleocr  # noqa: F401
-        from paddleocr import PaddleOCR  # noqa: F401
+    """检查是否有任何 OCR 后端可用（不触发初始化）。"""
+    from src.ocr_paddle import is_paddle_available
+    from src.ocr_lite import is_lite_available
 
-        return True
-    except Exception:
-        return False
+    return is_paddle_available() or is_lite_available()
 
 
-def _ensure_torch_dll_path() -> None:
-    """Windows 环境下确保 torch DLL 可被找到。
+def is_paddle_available() -> bool:
+    """检查 PaddleOCR 后端是否可用。"""
+    from src.ocr_paddle import is_paddle_available as _check
 
-    PaddleOCR 依赖 albumentations，后者在导入时触发 torch 加载。
-    torch 的 _load_dll_libraries 需要正确的 DLL 搜索路径，
-    在某些 Windows 环境下需要预先加载 torch 以设置路径。
-    """
-    import sys
+    return _check()
 
-    if sys.platform == "win32":
-        try:
-            import torch  # noqa: F401
-        except Exception:
-            pass
+
+def is_lite_available() -> bool:
+    """检查 RapidOCR 轻量版后端是否可用。"""
+    from src.ocr_lite import is_lite_available as _check
+
+    return _check()
 
 
 def page_has_text(page) -> bool:
@@ -69,67 +64,125 @@ def page_has_text(page) -> bool:
     return len(chars) >= _MIN_CHARS_FOR_TEXT
 
 
-# ── OcrEngine 单例 ────────────────────────────────────────
+# ── OcrEngine 调度器 ──────────────────────────────────────
 
 
 class OcrEngine:
-    """PaddleOCR 延迟初始化单例。
+    """OCR 引擎调度器，根据设备性能自动选择后端。
 
-    首次调用 get_instance() 时才加载 PaddleOCR 模型，
-    后续调用复用同一实例。
+    支持三种后端选择模式：
+    - "auto"   → 根据设备性能自动推荐（默认）
+    - "paddle" → 强制使用 PaddleOCR 高性能后端
+    - "lite"   → 强制使用 RapidOCR 轻量版后端
+
+    当 backend="auto" 时，会检测设备性能并选择推荐的后端。
+    如果推荐的后端不可用，会自动回退到另一个可用后端。
     """
 
     _instance: Optional["OcrEngine"] = None
-    _initialized: bool = False
+    _backend_choice: str = "auto"
 
-    def __init__(self) -> None:
-        self._ocr = None
+    def __init__(self, backend: str = "auto") -> None:
+        self._backend_name: str = ""
+        self._backend = None
+        self._profile: Optional[DeviceProfile] = None
+
+        # 解析后端选择
+        if backend == "auto":
+            self._profile = detect_device_profile()
+            recommended = recommend_ocr_backend(self._profile)
+            self._backend_name = self._resolve_backend(recommended)
+        else:
+            self._backend_name = self._resolve_backend(backend)
+
+        # 创建后端实例
+        self._backend = self._create_backend(self._backend_name)
+
+        logger.info(
+            "OCR 后端选择: %s%s",
+            self._backend_name,
+            f" (自动推荐: 设备性能={self._profile.tier.value})" if self._profile else "",
+        )
 
     @classmethod
-    def get_instance(cls) -> "OcrEngine":
-        """获取或创建 OcrEngine 单例（线程安全）。"""
+    def get_instance(cls, backend: str = "auto") -> "OcrEngine":
+        """获取或创建 OcrEngine 单例（线程安全）。
+
+        Parameters
+        ----------
+        backend : str
+            后端选择: "auto" | "paddle" | "lite"
+        """
+        # 记住用户的选择，reset 后仍使用同一后端
+        if backend != "auto":
+            cls._backend_choice = backend
+
         if cls._instance is None:
             with _engine_lock:
                 if cls._instance is None:
-                    inst = cls()
-                    inst._initialize()
-                    cls._instance = inst
+                    effective_backend = cls._backend_choice
+                    cls._instance = cls(backend=effective_backend)
         return cls._instance
 
     @classmethod
     def reset(cls) -> None:
-        """重置单例（仅用于测试）。"""
+        """重置单例（仅用于测试或批量处理间释放内存）。"""
         with _engine_lock:
+            if cls._instance is not None and cls._instance._backend is not None:
+                cls._instance._backend.release()
             cls._instance = None
-            cls._initialized = False
 
-    def _initialize(self) -> None:
-        """延迟导入 PaddleOCR 并初始化引擎。"""
-        if self._initialized:
-            return
-        try:
-            import os
+    def _resolve_backend(self, preferred: str) -> str:
+        """解析后端选择，如果首选不可用则回退。
 
-            # 单线程运行，减少内存占用
-            os.environ.setdefault("OMP_NUM_THREADS", "1")
-            os.environ.setdefault("MKL_NUM_THREADS", "1")
+        Parameters
+        ----------
+        preferred : str
+            首选后端: "paddle" 或 "lite"
 
-            _ensure_torch_dll_path()
-            from paddleocr import PaddleOCR
+        Returns
+        -------
+        str
+            实际可用的后端名称。
+        """
+        from src.ocr_paddle import is_paddle_available
+        from src.ocr_lite import is_lite_available
 
-            self._ocr = PaddleOCR(
-                use_angle_cls=True,
-                lang="ch",
-                show_log=False,
-                use_gpu=False,
-                cpu_threads=1,
-            )
-            self._initialized = True
-            logger.info("PaddleOCR 引擎初始化完成 (CPU mode, single-thread)")
-        except ImportError as e:
-            raise ImportError(
-                "PaddleOCR 依赖未安装。请运行: pip install 'lawtomd[ocr]'"
-            ) from e
+        paddle_ok = is_paddle_available()
+        lite_ok = is_lite_available()
+
+        if preferred == "paddle" and paddle_ok:
+            return "paddle"
+        if preferred == "lite" and lite_ok:
+            return "lite"
+
+        # 首选不可用，回退
+        if preferred == "paddle" and lite_ok:
+            logger.info("PaddleOCR 不可用，回退到 RapidOCR 轻量版")
+            return "lite"
+        if preferred == "lite" and paddle_ok:
+            logger.info("RapidOCR 不可用，回退到 PaddleOCR")
+            return "paddle"
+
+        # 都不可用
+        raise ImportError(
+            "无可用的 OCR 后端。请安装至少一种:\n"
+            "  pip install 'lawtomd[ocr]'      # PaddleOCR 高性能版\n"
+            "  pip install 'lawtomd[ocr-lite]'  # RapidOCR 轻量版"
+        )
+
+    def _create_backend(self, name: str):
+        """创建后端实例。"""
+        if name == "paddle":
+            from src.ocr_paddle import PaddleOcrBackend
+
+            return PaddleOcrBackend()
+        elif name == "lite":
+            from src.ocr_lite import LiteOcrBackend
+
+            return LiteOcrBackend()
+        else:
+            raise ValueError(f"未知 OCR 后端: {name}")
 
     def ocr_page(
         self,
@@ -140,6 +193,8 @@ class OcrEngine:
     ) -> list[LineMeta]:
         """对单张 PIL Image 执行 OCR，返回 LineMeta 列表。
 
+        委托给当前后端执行实际 OCR 操作。
+
         Parameters
         ----------
         image : PIL.Image
@@ -147,86 +202,33 @@ class OcrEngine:
         page_num : int
             页码（从 1 开始）。
         min_confidence : float
-            最低置信度阈值，低于此值的识别结果被丢弃。
+            最低置信度阈值。
         dpi : int
-            渲染图像时使用的 DPI，用于坐标缩放回 PDF 点空间。
+            渲染图像时使用的 DPI，用于坐标缩放。
 
         Returns
         -------
         list[LineMeta]
             按 (y0, x0) 排序的文本行。
         """
-        if self._ocr is None:
-            raise RuntimeError("OcrEngine 未初始化")
+        return self._backend.ocr_page(image, page_num, min_confidence, dpi)
 
-        # PaddleOCR 需要 numpy 数组或文件路径
-        import numpy as np
+    @property
+    def backend_name(self) -> str:
+        """当前使用的后端名称。"""
+        return self._backend_name
 
-        if hasattr(image, "save"):
-            # PIL Image → numpy array
-            img_input = np.array(image)
-        else:
-            img_input = image
+    @property
+    def backend_display_name(self) -> str:
+        """当前后端的显示名称。"""
+        if self._backend is not None:
+            return self._backend.display_name
+        return self._backend_name
 
-        raw = self._ocr.ocr(img_input, cls=True)
-        if not raw or not raw[0]:
-            return []
-
-        results = raw[0]
-        lines: list[LineMeta] = []
-
-        for item in results:
-            bbox, info = item
-            text, confidence = info
-            if not text or not text.strip():
-                continue
-            if confidence < min_confidence:
-                logger.debug(
-                    "跳过低置信度文本 '%s' (conf=%.3f)", text, confidence
-                )
-                continue
-
-            line = _paddle_bbox_to_linemeta(bbox, text, page_num, dpi=dpi)
-            lines.append(line)
-
-        lines.sort(key=lambda l: (l.y0, l.x0))
-        return lines
-
-
-# ── 坐标转换 ──────────────────────────────────────────────
-
-
-def _paddle_bbox_to_linemeta(
-    bbox: list[list[float]],
-    text: str,
-    page_num: int,
-    dpi: int = 300,
-) -> LineMeta:
-    """将 PaddleOCR 的 bbox 转换为 LineMeta。
-
-    PaddleOCR bbox 格式: [[x0,y0], [x1,y0], [x1,y1], [x0,y1]]
-    坐标单位为像素，需缩放回 PDF 点空间 (72 DPI)。
-    """
-    scale = 72.0 / dpi
-    xs = [p[0] * scale for p in bbox]
-    ys = [p[1] * scale for p in bbox]
-    x0 = min(xs)
-    y0 = min(ys)
-    x1 = max(xs)
-    y1 = max(ys)
-    height = y1 - y0
-
-    return LineMeta(
-        text=text.strip(),
-        page_num=page_num,
-        x0=round(x0, 1),
-        y0=round(y0, 1),
-        x1=round(x1, 1),
-        y1=round(y1, 1),
-        font_size=round(height, 1),
-        bold=False,
-        fontname="",
-    )
+    @property
+    def profile(self) -> Optional[DeviceProfile]:
+        """设备性能档案（仅 backend="auto" 时有值）。"""
+        return self._profile
 
 
 # ── PDF 页面 → 图像 ──────────────────────────────────────

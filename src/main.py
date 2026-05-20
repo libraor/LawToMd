@@ -3,6 +3,7 @@
 用法:
     lawtomd input.pdf
     lawtomd input.pdf -o output.md
+    lawtomd input.pdf --ocr auto --ocr-engine auto
     lawtomd batch ./pdfs/ -o ./output/
 """
 
@@ -44,6 +45,22 @@ def cli(verbose: int) -> None:
     )
 
 
+# ── 性能检测展示 ──────────────────────────────────────────
+
+
+def _show_device_profile(ocr_engine: str) -> None:
+    """当使用 OCR 时，展示设备性能检测结果和方案推荐。"""
+    if ocr_engine == "auto":
+        from src.profiler import detect_device_profile
+
+        profile = detect_device_profile()
+        click.echo(profile.summary(), err=True)
+    elif ocr_engine == "paddle":
+        click.echo("OCR 方案: PaddleOCR (高性能, 用户手动选择)", err=True)
+    elif ocr_engine == "lite":
+        click.echo("OCR 方案: RapidOCR (轻量版, 用户手动选择)", err=True)
+
+
 # ── 单文件转换 ────────────────────────────────────────────
 
 @cli.command()
@@ -60,6 +77,13 @@ def cli(verbose: int) -> None:
     show_default=True,
     help="OCR 模式: auto=对无文字页面回退, force=强制所有页面, off=禁用",
 )
+@click.option(
+    "--ocr-engine",
+    type=click.Choice(["auto", "paddle", "lite"]),
+    default="auto",
+    show_default=True,
+    help="OCR 引擎: auto=根据设备性能自动推荐, paddle=PaddleOCR高性能, lite=RapidOCR轻量版",
+)
 def convert(
     pdf_path: str,
     output: Optional[str],
@@ -68,6 +92,7 @@ def convert(
     toc: bool,
     no_anchor: bool,
     ocr: str,
+    ocr_engine: str,
 ) -> None:
     """将单个法律 PDF 转换为 Markdown。"""
     pdf = Path(pdf_path)
@@ -76,8 +101,18 @@ def convert(
 
     click.echo(f"解析: {pdf.name} ...", err=True)
 
+    # 展示设备性能检测和 OCR 方案推荐
+    if ocr != "off":
+        _show_device_profile(ocr_engine)
+
     # Step 1: 提取
-    lines, meta = extract_pdf(str(pdf), max_pages=max_pages, filter_header_footer=not no_filter, ocr_mode=ocr)
+    lines, meta = extract_pdf(
+        str(pdf),
+        max_pages=max_pages,
+        filter_header_footer=not no_filter,
+        ocr_mode=ocr,
+        ocr_engine=ocr_engine,
+    )
     click.echo(f"  提取 | 行: {len(lines)} | 法规: {meta.name or '?'}", err=True)
 
     # Step 2: 结构识别
@@ -109,6 +144,13 @@ def convert(
     show_default=True,
     help="OCR 模式: auto=对无文字页面回退, force=强制所有页面, off=禁用",
 )
+@click.option(
+    "--ocr-engine",
+    type=click.Choice(["auto", "paddle", "lite"]),
+    default="auto",
+    show_default=True,
+    help="OCR 引擎: auto=根据设备性能自动推荐, paddle=PaddleOCR高性能, lite=RapidOCR轻量版",
+)
 def batch(
     pdf_dir: str,
     output: str,
@@ -116,6 +158,7 @@ def batch(
     flatten: bool,
     no_filter: bool,
     ocr: str,
+    ocr_engine: str,
 ) -> None:
     """批量处理目录中的所有 PDF。"""
     src_dir = Path(pdf_dir)
@@ -129,6 +172,10 @@ def batch(
 
     click.echo(f"批量处理: {len(pdf_files)} 个文件", err=True)
 
+    # 展示设备性能检测和 OCR 方案推荐
+    if ocr != "off":
+        _show_device_profile(ocr_engine)
+
     for i, pdf_path in enumerate(pdf_files, start=1):
         rel = pdf_path.relative_to(src_dir)
         out_name = rel.with_suffix(".md")
@@ -140,7 +187,13 @@ def batch(
             out_path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
-            lines, meta = extract_pdf(str(pdf_path), max_pages=max_pages, filter_header_footer=not no_filter, ocr_mode=ocr)
+            lines, meta = extract_pdf(
+                str(pdf_path),
+                max_pages=max_pages,
+                filter_header_footer=not no_filter,
+                ocr_mode=ocr,
+                ocr_engine=ocr_engine,
+            )
             tree = parse_structure(lines, doc_type=meta.doc_type)
 
             md = build_markdown(tree, meta, include_toc=False, article_anchor=True)
@@ -157,6 +210,35 @@ def batch(
             click.echo(f"  [{i}/{len(pdf_files)}] ❌ {pdf_path.name}: {e}", err=True)
 
     click.echo(f"批量完成. 输出至: {out_dir}", err=True)
+
+
+# ── 性能检测命令 ──────────────────────────────────────────
+
+@cli.command()
+def profile() -> None:
+    """检测设备性能并显示 OCR 方案推荐。"""
+    from src.profiler import detect_device_profile, recommend_ocr_backend
+    from src.ocr import is_paddle_available, is_lite_available
+
+    profile_result = detect_device_profile()
+    recommended = recommend_ocr_backend(profile_result)
+
+    click.echo(profile_result.summary(), err=True)
+    click.echo("", err=True)
+
+    # 显示可用后端
+    paddle_ok = is_paddle_available()
+    lite_ok = is_lite_available()
+
+    click.echo("OCR 后端可用性:", err=True)
+    click.echo(f"  PaddleOCR (高性能): {'已安装' if paddle_ok else '未安装 (pip install lawtomd[ocr])'}", err=True)
+    click.echo(f"  RapidOCR (轻量版): {'已安装' if lite_ok else '未安装 (pip install lawtomd[ocr-lite])'}", err=True)
+    click.echo("", err=True)
+
+    if recommended == "paddle" and not paddle_ok:
+        click.echo("注意: 推荐 PaddleOCR 但未安装，将回退到 RapidOCR", err=True)
+    elif recommended == "lite" and not lite_ok:
+        click.echo("注意: 推荐 RapidOCR 但未安装，将回退到 PaddleOCR", err=True)
 
 
 # ── 辅助 ──────────────────────────────────────────────────

@@ -20,27 +20,31 @@
 ## 功能
 
 - 📄 **PDF 文本提取** — 基于 pdfplumber，保留坐标、字号、加粗等信息，过滤页眉页脚
-- 🔍 **OCR 支持** — 可选 PaddleOCR 引擎，对扫描件/图片 PDF 自动识别（auto/force/off 三种模式）
+- 🔍 **双 OCR 后端** — PaddleOCR（高性能）+ RapidOCR（轻量版），根据设备性能自动推荐
 - 🏛 **多文档类型支持** — 自动检测并适配法律法规、判决书、司法解释的结构解析策略
 - ⚖️ **法律术语识别** — 覆盖编/章/节/条/款/项/目结构，当事人/诉讼记录/裁判结果等判决书元素
 - 🔗 **引用标注提取** — 自动识别并输出法律引用（`《XXX》第X条第X款第X项`）
 - 📝 **结构化 Markdown** — YAML 元数据头 + 层级标题 + anchor 注释 + 引用标注
 - ⚡ **批量处理** — 递归扫描目录，保持子目录结构或扁平化输出
 - 🧹 **文本规范化** — 全角空格统一、OCR 误识别修正、自定义替换规则（`config/replace.yaml`）
-- 🔧 **可配置** — 页眉页脚过滤、目录生成、anchor 注释均可调
+- 🖥 **设备性能检测** — 自动评估 CPU/内存/GPU，推荐最优 OCR 方案
+- 🔧 **可配置** — 页眉页脚过滤、目录生成、anchor 注释、OCR 引擎选择均可调
 
 ---
 
 ## 安装
 
 ```bash
-# 从源码安装（核心功能）
+# 从源码安装（核心功能，不含 OCR）
 git clone https://github.com/YOUR_ORG/lawtomd.git
 cd lawtomd
 pip install -e .
 
-# 安装 OCR 支持（可选）
+# 安装 PaddleOCR 高性能版（适合高配设备）
 pip install -e ".[ocr]"
+
+# 安装 RapidOCR 轻量版（适合低配设备，内存占用小）
+pip install -e ".[ocr-lite]"
 
 # 确认安装
 lawtomd --help
@@ -52,9 +56,20 @@ lawtomd --help
 
 ## OCR 配置要求
 
-OCR 功能为可选依赖，通过 `pip install -e ".[ocr]"` 一并安装。
+LawToMd 提供两种 OCR 后端，可根据设备性能自动选择或手动指定。
 
-### 依赖清单
+### 后端对比
+
+| 特性 | PaddleOCR (高性能) | RapidOCR (轻量版) |
+|------|-------------------|-------------------|
+| 安装方式 | `pip install -e ".[ocr]"` | `pip install -e ".[ocr-lite]"` |
+| 推理框架 | PaddlePaddle | ONNX Runtime |
+| 内存占用 | 1-2 GB | < 500 MB |
+| 识别准确率 | 高 | 中高 |
+| GPU 加速 | 支持 | 不支持 |
+| 适用场景 | 高配设备（≥4核/≥8GB/独显） | 低配设备、轻量部署 |
+
+### PaddleOCR 依赖清单
 
 | 包 | 版本 | 用途 |
 |---|---|---|
@@ -64,15 +79,32 @@ OCR 功能为可选依赖，通过 `pip install -e ".[ocr]"` 一并安装。
 | `PyMuPDF` | >=1.23.0 | PDF 页面→图像渲染 |
 | `Pillow` | >=10.0 | 图像处理 |
 
+### RapidOCR 依赖清单
+
+| 包 | 版本 | 用途 |
+|---|---|---|
+| `rapidocr_onnxruntime` | >=1.3.0 | 轻量 OCR 引擎（ONNX 推理） |
+| `PyMuPDF` | >=1.23.0 | PDF 页面→图像渲染 |
+| `Pillow` | >=10.0 | 图像处理 |
+
 ### 系统要求
 
 | 项目 | 要求 |
 |---|---|
 | **Python** | >=3.10, <=3.12 |
-| **内存** | 建议 >=4GB（PaddleOCR 模型加载约占用 1-2GB） |
-| **磁盘** | 首次运行自动下载中文识别模型（约 50MB） |
+| **内存** | PaddleOCR 建议 >=4GB；RapidOCR 建议 >=2GB |
+| **磁盘** | PaddleOCR 首次运行自动下载模型（约 50MB）；RapidOCR 模型更小 |
 | **CPU** | 最低支持，默认单线程运行 |
-| **GPU** | 可选（需安装 `paddlepaddle-gpu` 替代 `paddlepaddle`） |
+| **GPU** | 可选（仅 PaddleOCR，需安装 `paddlepaddle-gpu` 替代 `paddlepaddle`） |
+
+### 自动推荐机制
+
+使用 `--ocr-engine auto`（默认）时，LawToMd 会自动检测设备性能并推荐后端：
+
+- **高性能**（CPU ≥ 4 核 且 内存 ≥ 8GB 且 具备独立显卡）→ 推荐 PaddleOCR
+- **低性能**（不满足上述任一条件）→ 推荐 RapidOCR
+
+可通过 `lawtomd profile` 命令查看检测结果。
 
 ### Windows 注意事项
 
@@ -83,17 +115,32 @@ OCR 功能为可选依赖，通过 `pip install -e ".[ocr]"` 一并安装。
 ### 验证 OCR 可用
 
 ```bash
-# 转换时启用自动 OCR 模式
+# 查看设备性能检测和 OCR 方案推荐
+lawtomd profile
+
+# 转换时启用自动 OCR 模式（自动选择后端）
 lawtomd convert 扫描件.pdf --ocr auto
 
-# 或使用 verbose 查看初始化日志
+# 手动指定 OCR 后端
+lawtomd convert 扫描件.pdf --ocr auto --ocr-engine paddle
+lawtomd convert 扫描件.pdf --ocr auto --ocr-engine lite
+
+# 使用 verbose 查看初始化日志
 lawtomd -vv convert 扫描件.pdf --ocr auto
 ```
 
 初始化成功会看到类似日志：
 
 ```
-[INFO] src.ocr: PaddleOCR 引擎初始化完成 (CPU mode, single-thread)
+[INFO] src.ocr: OCR 后端选择: paddle (自动推荐: 设备性能=high)
+[INFO] src.ocr_paddle: PaddleOCR 引擎初始化完成 (CPU mode)
+```
+
+或
+
+```
+[INFO] src.ocr: OCR 后端选择: lite (自动推荐: 设备性能=low)
+[INFO] src.ocr_lite: RapidOCR 引擎初始化完成 (轻量模式, ONNX Runtime)
 ```
 
 ---
@@ -104,14 +151,17 @@ lawtomd -vv convert 扫描件.pdf --ocr auto
 # 单文件转换
 lawtomd convert 民法典.pdf
 
-# 对扫描件自动启用 OCR
+# 对扫描件自动启用 OCR（自动选择后端）
 lawtomd convert 扫描件.pdf --ocr auto
 
-# 强制所有页面使用 OCR
-lawtomd convert 扫描件.pdf --ocr force
+# 强制所有页面使用 OCR，指定 PaddleOCR 后端
+lawtomd convert 扫描件.pdf --ocr force --ocr-engine paddle
 
 # 批量处理一批法规
 lawtomd batch ./法规目录/ -o ./output/
+
+# 查看设备性能和 OCR 方案推荐
+lawtomd profile
 ```
 
 ---
@@ -139,6 +189,7 @@ lawtomd convert <PDF_PATH> [选项]
 | `--toc` | 不生成 | 在 Markdown 开头生成目录 |
 | `--no-anchor` | 生成 | 不添加 `<!-- anchor -->` 注释 |
 | `--ocr` | `off` | OCR 模式: `auto`=对无文字页面回退, `force`=强制所有页面, `off`=禁用 |
+| `--ocr-engine` | `auto` | OCR 引擎: `auto`=根据设备性能自动推荐, `paddle`=PaddleOCR高性能, `lite`=RapidOCR轻量版 |
 
 **示例：**
 
@@ -151,6 +202,9 @@ lawtomd convert 民法典.pdf -o output/民法典.md
 
 # 预览前 10 页
 lawtomd convert 民法典.pdf --max-pages 10
+
+# OCR 自动模式 + 指定轻量版后端
+lawtomd convert 扫描件.pdf --ocr auto --ocr-engine lite
 ```
 
 ### `batch` — 批量处理
@@ -166,6 +220,7 @@ lawtomd batch <PDF_DIR> [选项]
 | `--flatten` | 不展开 | 扁平化到单层目录 |
 | `--no-filter` | 过滤 | 不过滤页眉页脚 |
 | `--ocr` | `off` | OCR 模式: `auto`/`force`/`off` |
+| `--ocr-engine` | `auto` | OCR 引擎: `auto`/`paddle`/`lite` |
 
 **示例：**
 
@@ -175,7 +230,18 @@ lawtomd batch ./pdfs/ -o ./output/
 
 # 扁平化输出（所有 .md 在同一目录）
 lawtomd batch ./pdfs/ -o ./output/ --flatten
+
+# 批量 OCR，自动选择后端
+lawtomd batch ./pdfs/ -o ./output/ --ocr auto
 ```
+
+### `profile` — 设备性能检测
+
+```bash
+lawtomd profile
+```
+
+检测当前设备的 CPU 核心数、内存容量、GPU 信息，输出性能等级和推荐的 OCR 方案。同时显示各 OCR 后端的安装状态。
 
 ---
 
@@ -216,7 +282,7 @@ doc_type: law
 ```markdown
 ---
 title: 北京市朝阳区人民法院民事判决书
-doc_id: 
+doc_id:
 case_number: （2023）京0105民初12345号
 court: 北京市朝阳区人民法院
 judgment_type: 民事判决书
@@ -273,13 +339,16 @@ PDF 文件 ─────→│    extractor.py     │── → LineMeta[]
 
 | 模块 | 文件 | 核心职责 |
 |------|------|----------|
-| 数据模型 | `models.py` | LineMeta / LawMeta / JudgmentMeta / HierarchyNode 定义 |
+| 数据模型 | `models.py` | LineMeta / LawMeta / JudgmentMeta / HierarchyNode / DocType 定义 |
 | 模式库 | `patterns.py` | 30+ 预编译正则，覆盖编/章/节/条/当事人/裁判结果/法律引用/案号等 |
 | 文本提取 | `extractor.py` | 双策略提取、页眉页脚过滤、OCR 调度、文本规范化、文档类型检测 |
 | 结构识别 | `structure.py` | 多策略解析（法规/判决书）、层级状态机、子条款归并、引用提取 |
 | Markdown 组装 | `builder.py` | YAML 元数据头（文档类型感知）、层级标题映射、anchor + 引用注释 |
-| OCR 引擎 | `ocr.py` | PaddleOCR 延迟初始化单例，PDF 页→图像渲染，坐标转换 |
-| CLI 入口 | `main.py` | click 命令组（convert + batch），均支持 --ocr 选项 |
+| OCR 调度器 | `ocr.py` | 统一 OcrEngine 接口，自动选择/回退后端，PDF 页面→图像渲染 |
+| PaddleOCR 后端 | `ocr_paddle.py` | PaddleOCR 延迟初始化，GPU 自动检测，坐标转换 |
+| RapidOCR 后端 | `ocr_lite.py` | RapidOCR (ONNX Runtime) 轻量后端，低内存占用 |
+| 设备检测 | `profiler.py` | CPU/内存/GPU 检测，性能分级，OCR 后端推荐 |
+| CLI 入口 | `main.py` | click 命令组（convert + batch + profile），均支持 --ocr/--ocr-engine 选项 |
 
 ---
 
@@ -293,6 +362,24 @@ PDF 文件 ─────→│    extractor.py     │── → LineMeta[]
 4. **树构建**：维护一个层级栈，新节点按优先级找到正确父节点
 5. **目录去重**：同标题且无实质内容的节点自动合并
 6. **引用提取**：遍历树节点，提取所有法律引用标注（`《XXX》第X条`）
+
+### OCR 双后端架构
+
+```
+                    OcrEngine (调度器)
+                   ┌────────────────┐
+                   │ backend="auto" │──→ profiler.py 检测设备性能
+                   │                │    ┌──────────────────────┐
+                   │   高性能设备?   │──→ │ PaddleOcrBackend     │
+                   │                │    │ (ocr_paddle.py)      │
+                   │   低性能设备?   │──→ │ LiteOcrBackend       │
+                   │                │    │ (ocr_lite.py)        │
+                   └────────────────┘    └──────────────────────┘
+```
+
+- **自动推荐**：`--ocr-engine auto`（默认）根据设备 CPU 核心数、内存、GPU 自动选择
+- **手动指定**：`--ocr-engine paddle` 或 `--ocr-engine lite`
+- **自动回退**：推荐的后端不可用时，自动切换到另一个可用后端
 
 ### 文本规范化
 
@@ -323,13 +410,16 @@ pdfplumber 提供两种提取方式，按优先级尝试：
 LawToMd/
 ├── src/
 │   ├── __init__.py
-│   ├── main.py           # CLI 入口
+│   ├── main.py           # CLI 入口（convert + batch + profile）
 │   ├── models.py         # 数据类
 │   ├── patterns.py       # 正则模式库
 │   ├── extractor.py      # PDF 文本提取 + OCR 调度
 │   ├── structure.py      # 结构识别引擎
 │   ├── builder.py        # Markdown 组装
-│   └── ocr.py            # PaddleOCR 引擎封装（可选依赖）
+│   ├── ocr.py            # OCR 引擎调度器（统一接口）
+│   ├── ocr_paddle.py     # PaddleOCR 高性能后端
+│   ├── ocr_lite.py       # RapidOCR 轻量版后端
+│   └── profiler.py       # 设备性能检测 + OCR 方案推荐
 ├── config/
 │   └── replace.yaml      # 常用词替换规则
 ├── tests/
@@ -366,10 +456,10 @@ python tests/test_e2e.py
 
 ### 测试覆盖
 
-| 测试文件 | 数量 | 覆盖范围 |
-|----------|------|----------|
-| `test_patterns.py` | 16 | 各级别正则匹配/不匹配、中文数字转换 |
-| `test_structure.py` | 5 | 空输入、单条、多级、子条款、收集 |
-| `test_builder.py` | 4 | 基础构建、多级、单条、无 anchor |
-| `test_ocr.py` | 15 | OCR 转换、引擎初始化、PDF 提取 |
-| `test_e2e.py` | 1 | 全流水线：提取→结构→Markdown |
+| 测试文件 | 覆盖范围 |
+|----------|----------|
+| `test_patterns.py` | 各级别正则匹配/不匹配、中文数字转换 |
+| `test_structure.py` | 空输入、单条、多级、子条款、收集 |
+| `test_builder.py` | 基础构建、多级、单条、无 anchor |
+| `test_ocr.py` | OCR 转换、引擎初始化、PDF 提取 |
+| `test_e2e.py` | 全流水线：提取→结构→Markdown |
