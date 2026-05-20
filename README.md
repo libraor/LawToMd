@@ -17,6 +17,7 @@
 ## 功能
 
 - 📄 **PDF 文本提取** — 基于 pdfplumber，保留坐标、字号、加粗等信息，过滤页眉页脚
+- 🔍 **OCR 支持** — 可选 PaddleOCR 引擎，对扫描件/图片 PDF 自动识别（auto/force/off 三种模式）
 - 🏛 **层级结构识别** — 自动解析编/章/节/条/款/项/目，构建层级树
 - 📝 **结构化 Markdown** — YAML 元数据头 + 层级标题 + anchor 注释
 - ⚡ **批量处理** — 递归扫描目录，保持子目录结构或扁平化输出
@@ -27,16 +28,67 @@
 ## 安装
 
 ```bash
-# 从源码安装
+# 从源码安装（核心功能）
 git clone https://github.com/YOUR_ORG/lawtomd.git
 cd lawtomd
 pip install -e .
+
+# 安装 OCR 支持（可选）
+pip install -e ".[ocr]"
 
 # 确认安装
 lawtomd --help
 ```
 
-**依赖**：`pdfplumber` (PDF 解析引擎)、`click` (CLI 框架)。
+**核心依赖**：`pdfplumber` (PDF 解析引擎)、`click` (CLI 框架)。
+
+---
+
+## OCR 配置要求
+
+OCR 功能为可选依赖，通过 `pip install -e ".[ocr]"` 一并安装。
+
+### 依赖清单
+
+| 包 | 版本 | 用途 |
+|---|---|---|
+| `paddlepaddle` | 3.0.0 | 深度学习推理框架 |
+| `paddleocr` | 2.10.0 | OCR 引擎（中文识别） |
+| `opencv-contrib-python` | 4.13.0.92 | 图像预处理 |
+| `PyMuPDF` | >=1.23.0 | PDF 页面→图像渲染 |
+| `Pillow` | >=10.0 | 图像处理 |
+
+### 系统要求
+
+| 项目 | 要求 |
+|---|---|
+| **Python** | >=3.10, <=3.12 |
+| **内存** | 建议 >=4GB（PaddleOCR 模型加载约占用 1-2GB） |
+| **磁盘** | 首次运行自动下载中文识别模型（约 50MB） |
+| **CPU** | 最低支持，默认单线程运行 |
+| **GPU** | 可选（需安装 `paddlepaddle-gpu` 替代 `paddlepaddle`） |
+
+### Windows 注意事项
+
+- PaddleOCR 底层依赖 `torch` 的 DLL 加载，代码已内置 `_ensure_torch_dll_path()` 自动处理路径
+- 如遇到 DLL 加载失败，可尝试安装 [Visual C++ Redistributable](https://learn.microsoft.com/zh-cn/cpp/windows/latest-downloads)
+- OCR 模型首次启动时需下载缓存，请耐心等待
+
+### 验证 OCR 可用
+
+```bash
+# 转换时启用自动 OCR 模式
+lawtomd convert 扫描件.pdf --ocr auto
+
+# 或使用 verbose 查看初始化日志
+lawtomd -vv convert 扫描件.pdf --ocr auto
+```
+
+初始化成功会看到类似日志：
+
+```
+[INFO] src.ocr: PaddleOCR 引擎初始化完成 (CPU mode, single-thread)
+```
 
 ---
 
@@ -45,6 +97,12 @@ lawtomd --help
 ```bash
 # 单文件转换
 lawtomd convert 民法典.pdf
+
+# 对扫描件自动启用 OCR
+lawtomd convert 扫描件.pdf --ocr auto
+
+# 强制所有页面使用 OCR
+lawtomd convert 扫描件.pdf --ocr force
 
 # 批量处理一批法规
 lawtomd batch ./法规目录/ -o ./output/
@@ -74,6 +132,7 @@ lawtomd convert <PDF_PATH> [选项]
 | `--no-filter` | 过滤 | 不过滤页眉页脚 |
 | `--toc` | 不生成 | 在 Markdown 开头生成目录 |
 | `--no-anchor` | 生成 | 不添加 `<!-- anchor -->` 注释 |
+| `--ocr` | `off` | OCR 模式: `auto`=对无文字页面回退, `force`=强制所有页面, `off`=禁用 |
 
 **示例：**
 
@@ -99,6 +158,8 @@ lawtomd batch <PDF_DIR> [选项]
 | `-o, --output` | `./output/` | 输出目录 |
 | `--max-pages` | 全部 | 每份 PDF 只处理前 N 页 |
 | `--flatten` | 不展开 | 扁平化到单层目录 |
+| `--no-filter` | 过滤 | 不过滤页眉页脚 |
+| `--ocr` | `off` | OCR 模式: `auto`/`force`/`off` |
 
 **示例：**
 
@@ -149,6 +210,7 @@ source: 民法典.pdf
                 ╭─────────────────────╮
 PDF 文件 ─────→│    extractor.py     │── → LineMeta[]
                 │ pdfplumber 文本+坐标  │
+                │    + OCR 调度       │
                 ╰─────────┬───────────╯
                           ↓
                 ╭─────────────────────╮
@@ -168,10 +230,11 @@ PDF 文件 ─────→│    extractor.py     │── → LineMeta[]
 |------|------|----------|
 | 数据模型 | `models.py` | LineMeta / LawMeta / HierarchyNode 定义 |
 | 模式库 | `patterns.py` | 14 个预编译正则，覆盖编、章、节、条、项、目、文号、日期 |
-| 文本提取 | `extractor.py` | 双策略提取（extract_text_lines / words 聚类），页眉页脚过滤 |
+| 文本提取 | `extractor.py` | 双策略提取（extract_text_lines / words 聚类），页眉页脚过滤，OCR 调度 |
 | 结构识别 | `structure.py` | 层级状态机、子条款归并、目录去重、路径构建 |
 | Markdown 组装 | `builder.py` | YAML 元数据头、层级标题映射、anchor 注释 |
-| CLI 入口 | `main.py` | click 命令组（convert + batch） |
+| OCR 引擎 | `ocr.py` | PaddleOCR 延迟初始化单例，PDF 页→图像渲染，坐标转换 |
+| CLI 入口 | `main.py` | click 命令组（convert + batch），均支持 --ocr 选项 |
 
 ---
 
@@ -204,9 +267,10 @@ LawToMd/
 │   ├── main.py           # CLI 入口
 │   ├── models.py         # 数据类
 │   ├── patterns.py       # 正则模式库
-│   ├── extractor.py      # PDF 文本提取
+│   ├── extractor.py      # PDF 文本提取 + OCR 调度
 │   ├── structure.py      # 结构识别引擎
-│   └── builder.py        # Markdown 组装
+│   ├── builder.py        # Markdown 组装
+│   └── ocr.py            # PaddleOCR 引擎封装（可选依赖）
 ├── config/
 │   └── replace.yaml      # 常用词替换规则
 ├── tests/
@@ -214,6 +278,7 @@ LawToMd/
 │   ├── test_patterns.py  # 模式测试
 │   ├── test_structure.py # 结构测试
 │   ├── test_builder.py   # 构建测试
+│   ├── test_ocr.py       # OCR 测试（需安装 OCR 依赖）
 │   └── test_e2e.py       # 端到端测试
 ├── pyproject.toml
 ├── requirements.txt

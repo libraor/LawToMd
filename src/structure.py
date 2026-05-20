@@ -73,6 +73,8 @@ def _lines_to_nodes(lines: list[LineMeta]) -> list[HierarchyNode]:
                 title=text,
                 text=text,
                 page_num=line.page_num,
+                parent=current,
+                hierarchy_path=current.hierarchy_path + [text],
             )
             current.children.append(sub_node)
         elif current is None:

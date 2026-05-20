@@ -90,7 +90,6 @@ def _render_node(
     node: HierarchyNode,
     *,
     article_anchor: bool,
-    indent_level: int = 0,
 ) -> None:
     """递归渲染一个节点及其子节点。"""
     # 标题行
@@ -113,5 +112,5 @@ def _render_node(
 
     # 子节点（递归）
     for child in node.children:
-        _render_node(parts, child, article_anchor=article_anchor, indent_level=indent_level)
+        _render_node(parts, child, article_anchor=article_anchor)
 

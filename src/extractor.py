@@ -12,12 +12,12 @@
 from __future__ import annotations
 
 import logging
-import re
+from collections import Counter
 from pathlib import Path
 from typing import Literal, Optional
 
 from src.models import LawMeta, LineMeta
-from src.patterns import RE_HEADER_FOOTER
+from src.patterns import RE_AUTHORITY, RE_DATE, RE_DOC_ID, RE_HEADER_FOOTER
 
 _OcrMode = Literal["auto", "force", "off"]
 
@@ -167,7 +167,7 @@ def extract_pdf(
 
                     if not meta_extracted and page_num == 1:
                         _extract_meta_from_page(
-                            page, meta, page_lines,
+                            meta, page_lines,
                             ocr_fallback_text=ocr_fallback_text,
                         )
                         meta_extracted = True
@@ -213,7 +213,7 @@ def extract_pdf(
 
                 if page_num == 1:
                     _extract_meta_from_page(
-                        page, meta, page_lines,
+                        meta, page_lines,
                         ocr_fallback_text=ocr_fallback_text,
                     )
 
@@ -241,8 +241,6 @@ def _extract_page_lines(page, page_num: int) -> list[LineMeta]:
     策略：取 page.extract_words() 再按 y0 聚合成行，
     同时保留每行的 x0/x1 范围。
     """
-    from pdfplumber.page import Page
-
     page_lines: list[LineMeta] = []
 
     # 方法 A：用 extract_text_lines（pdfplumber >= 0.7）
@@ -342,65 +340,6 @@ def _extract_page_lines(page, page_num: int) -> list[LineMeta]:
     return page_lines
 
 
-def _extract_page_lines_fitz(
-    pdf_path: Path,
-    page_num: int,
-) -> list[LineMeta]:
-    """PyMuPDF 文本提取回退。
-
-    当 pdfplumber 无法提取文字时（如 OCR 后 PDF 的 hOCR 层），
-    使用 fitz.get_text(\"blocks\") 获取文字块并转换为 LineMeta。
-    """
-    try:
-        import fitz
-    except ImportError:
-        logger.debug("PyMuPDF not installed, skipping fitz fallback")
-        return []
-
-    page_lines: list[LineMeta] = []
-    try:
-        doc = fitz.open(str(pdf_path))
-        page = doc.load_page(page_num - 1)
-        blocks = page.get_text("blocks")
-        doc.close()
-    except Exception:
-        logger.debug("fitz failed to open PDF for page %d", page_num, exc_info=True)
-        return []
-
-    for block in blocks:
-        # block = (x0, y0, x1, y1, text, block_no, block_type)
-        if len(block) < 7:
-            continue
-        x0, y0, x1, y1, text, _block_no, block_type = block[0], block[1], block[2], block[3], block[4], block[5], block[6]
-        if block_type != 0:  # 只取文字块，跳过图片块
-            continue
-        text = text.strip()
-        if not text:
-            continue
-        page_lines.append(LineMeta(
-            text=text,
-            page_num=page_num,
-            x0=x0,
-            y0=y0,
-            x1=x1,
-            y1=y1,
-            font_size=0,
-            bold=False,
-            fontname="",
-        ))
-
-    # 按 y0 排序
-    page_lines.sort(key=lambda l: l.y0)
-
-    if page_lines:
-        logger.info(
-            "Page %d: PyMuPDF extracted %d lines",
-            page_num, len(page_lines),
-        )
-
-    return page_lines
-
-
 def _extract_font_info(chars: list[dict]) -> tuple[float, bool, str]:
     """从 chars 列表提取字体信息，返回 (font_size, bold, fontname)。"""
     font_sizes = [c.get("size", 0) for c in chars if c.get("size")]
@@ -437,29 +376,6 @@ def _make_line_from_font(
     )
 
 
-def _make_line(
-    line_text: str,
-    line_x0: float,
-    line_y0: float,
-    line_x1: float,
-    page_num: int,
-    chars: list[dict],
-) -> LineMeta:
-    """从文字列表构建 LineMeta。"""
-    font_size, bold, fontname = _extract_font_info(chars)
-    return LineMeta(
-        text=line_text.strip(),
-        page_num=page_num,
-        x0=line_x0,
-        y0=line_y0,
-        x1=line_x1,
-        y1=line_y0 + (font_size if font_size else 12),
-        font_size=font_size,
-        bold=bold,
-        fontname=fontname,
-    )
-
-
 def _filter_lines(lines: list[LineMeta]) -> list[LineMeta]:
     filtered: list[LineMeta] = []
     for line in lines:
@@ -473,8 +389,6 @@ def _filter_lines(lines: list[LineMeta]) -> list[LineMeta]:
 
 
 def _remove_cross_page_duplicates(lines: list[LineMeta]) -> list[LineMeta]:
-    from collections import Counter
-
     text_page_counts: Counter = Counter()
     for line in lines:
         text_page_counts[(line.text, line.y0)] += 1
@@ -494,13 +408,10 @@ def _remove_cross_page_duplicates(lines: list[LineMeta]) -> list[LineMeta]:
 
 
 def _extract_meta_from_page(
-    page,
     meta: LawMeta,
     page_lines: list[LineMeta],
     ocr_fallback_text: str = "",
 ) -> None:
-    from src.patterns import RE_DATE, RE_DOC_ID
-
     # 优先使用已提取的行文本，避免重复调用 page.extract_text()
     text = "\n".join(l.text for l in page_lines)
 
@@ -523,7 +434,6 @@ def _extract_meta_from_page(
         if len(dates) > 1:
             meta.effective_date = dates[1].strip()
 
-    from src.patterns import RE_AUTHORITY
     for m in RE_AUTHORITY.finditer(text):
         meta.issuing_authority = m.group(0).strip()
         break
