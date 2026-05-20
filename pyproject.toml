@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lawtomd"
+version = "0.1.0"
+description = "法律 PDF 转 Markdown 工具 — 面向 AI 向量数据库的结构化输出"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "CopyRight"}
+authors = [
+    {name = "Lin.Yao"},
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+    "Topic :: Text Processing :: Markdown",
+    "Topic :: Text Processing :: General",
+]
+
+dependencies = [
+    "pdfplumber>=0.10",
+    "click>=8.0",
+]
+
+[project.optional-dependencies]
+ocr = [
+    "paddlepaddle==3.0.0",
+    "paddleocr==2.10.0",
+    "opencv-contrib-python==4.13.0.92",
+    "PyMuPDF>=1.23.0",
+    "Pillow>=10.0",
+]
+
+[project.scripts]
+lawtomd = "src.main:cli"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]

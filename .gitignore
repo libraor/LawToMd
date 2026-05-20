@@ -1,0 +1,30 @@
+# 输入输出目录
+output/
+input/
+tests/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+build/
+
+
+# 开发工具
+.vscode/
+.idea/
+*.swp
+*.swo
+.deepseek/
+.spec-workflow/
+.claude/
+.venv/
+
+# 系统
+.DS_Store
+Thumbs.db
+tests/fixtures/民法典-测试用.pdf 
+CLAUDE.md
+nul
+.coverage
