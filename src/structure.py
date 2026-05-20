@@ -3,6 +3,11 @@
 从 LineMeta 列表出发，遍历各行，通过正则 + 排版启发式判定层级，
 构建树状的 HierarchyNode 结构。
 
+支持文档类型：
+- 法律法规：编/章/节/条/款/项/目
+- 判决书：当事人/诉讼记录/裁判结果/审判人员
+- 司法解释：按法规结构解析
+
 核心流程:
     lines → detect_level() → assign_parent() → build_path() → nodes
 """
@@ -12,31 +17,57 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from src.models import HierarchyNode, Level, LineMeta
-from src.patterns import detect_level, parse_article_number
+from src.models import DocType, HierarchyNode, Level, LineMeta
+from src.patterns import (
+    RE_JUDGES,
+    RE_LAW_REFERENCE,
+    RE_PARTY,
+    RE_PROCEDURE_HEADER,
+    RE_RULING_HEADER,
+    detect_level,
+    parse_article_number,
+)
 
 logger = logging.getLogger(__name__)
 
 
-def parse_structure(lines: list[LineMeta]) -> list[HierarchyNode]:
+def parse_structure(
+    lines: list[LineMeta],
+    doc_type: DocType = DocType.UNKNOWN,
+) -> list[HierarchyNode]:
     """将排好序的 LineMeta 列表解析为 HierarchyNode 树。
 
-    返回值是所有顶层节点（通常是 PART 或 CHAPTER 或 ARTICLE），
-    每个节点下挂 children。
+    Parameters
+    ----------
+    lines : list[LineMeta]
+        按页码+坐标排序的文本行。
+    doc_type : DocType
+        文档类型，影响解析策略。
+
+    Returns
+    -------
+    list[HierarchyNode]
+        所有顶层节点，每个节点下挂 children。
     """
     if not lines:
         return []
 
-    # 第一步：每行做层级判定，合并连续的同级内容
-    raw_nodes = _lines_to_nodes(lines)
+    # 根据文档类型选择解析策略
+    if doc_type == DocType.JUDGMENT:
+        raw_nodes = _lines_to_judgment_nodes(lines)
+    else:
+        raw_nodes = _lines_to_nodes(lines)
 
-    # 第二步：构建层级树
+    # 构建层级树
     tree = _build_tree(raw_nodes)
+
+    # 提取法律引用标注
+    _extract_references(tree)
 
     return tree
 
 
-# ── Step 1: 行 → 节点 ─────────────────────────────────────
+# ── Step 1a: 法规行 → 节点 ────────────────────────────────
 
 # 只有编/章/节/条创建独立的结构节点
 _TITLE_LEVELS = frozenset({"part", "chapter", "section", "article"})
@@ -89,6 +120,99 @@ def _lines_to_nodes(lines: list[LineMeta]) -> list[HierarchyNode]:
     return nodes
 
 
+# ── Step 1b: 判决书行 → 节点 ──────────────────────────────
+
+def _lines_to_judgment_nodes(lines: list[LineMeta]) -> list[HierarchyNode]:
+    """将判决书的 LineMeta 行列表转换为扁平 HierarchyNode 列表。
+
+    判决书结构：
+    1. 标题（法院名称 + 文书类型）
+    2. 当事人信息（原告/被告/第三人）
+    3. 诉讼记录（诉称/辩称/审理查明）
+    4. 裁判结果（判决如下/裁定如下）
+    5. 审判人员署名
+    """
+    nodes: list[HierarchyNode] = []
+    current: Optional[HierarchyNode] = None
+
+    for line in lines:
+        text = line.text.strip()
+        if not text:
+            continue
+
+        # 当事人信息
+        if RE_PARTY.match(text):
+            if current:
+                _trim_text(current)
+            current = HierarchyNode(
+                level=Level.PARTY,
+                title=text,
+                text="",
+                page_num=line.page_num,
+            )
+            nodes.append(current)
+        # 诉讼记录段落
+        elif RE_PROCEDURE_HEADER.match(text):
+            if current:
+                _trim_text(current)
+            current = HierarchyNode(
+                level=Level.PROCEDURE,
+                title=text,
+                text="",
+                page_num=line.page_num,
+            )
+            nodes.append(current)
+        # 裁判结果段落
+        elif RE_RULING_HEADER.match(text):
+            if current:
+                _trim_text(current)
+            current = HierarchyNode(
+                level=Level.RULING,
+                title=text,
+                text="",
+                page_num=line.page_num,
+            )
+            nodes.append(current)
+        # 审判人员署名
+        elif RE_JUDGES.match(text):
+            if current:
+                _trim_text(current)
+            current = HierarchyNode(
+                level=Level.JUDGES,
+                title=text,
+                text="",
+                page_num=line.page_num,
+            )
+            nodes.append(current)
+        # 法条结构（判决书中也可能引用法条）
+        elif detect_level(text) in _TITLE_LEVELS:
+            if current:
+                _trim_text(current)
+            level_key = detect_level(text)
+            current = _make_node(level_key, text, line)
+            nodes.append(current)
+        elif detect_level(text) in _SUB_LEVELS and current is not None:
+            sub_level_key = detect_level(text)
+            sub_node = HierarchyNode(
+                level=Level.SUB_CLAUSE if sub_level_key == "sub_clause" else Level.ITEM,
+                title=text,
+                text=text,
+                page_num=line.page_num,
+                parent=current,
+                hierarchy_path=current.hierarchy_path + [text],
+            )
+            current.children.append(sub_node)
+        elif current is not None:
+            _append_text(current, text, line)
+
+    if current:
+        _trim_text(current)
+
+    return nodes
+
+
+# ── 节点构建辅助 ──────────────────────────────────────────
+
 def _make_node(level_key: str, text: str, line: LineMeta) -> HierarchyNode:
     try:
         level = Level(level_key)
@@ -126,7 +250,6 @@ def _trim_text(node: HierarchyNode) -> None:
     """清理节点末尾空白和多余的换行。"""
     node.text = node.text.strip()
     node.title = node.title.strip()
-
 
 
 # ── Step 2: 扁平节点 → 树 ──────────────────────────────
@@ -178,12 +301,30 @@ LEVEL_ORDER = {
     Level.CLAUSE: 5,
     Level.SUB_CLAUSE: 6,
     Level.ITEM: 7,
+    # 判决书层级（与法规同级并列）
+    Level.PARTY: 3,
+    Level.PROCEDURE: 3,
+    Level.RULING: 3,
+    Level.JUDGES: 4,
 }
 
 
 def _level_order(level: Level) -> int:
     """返回层级的排序值（越小越上层）。"""
     return LEVEL_ORDER.get(level, 99)
+
+
+# ── 法律引用标注提取 ──────────────────────────────────────
+
+def _extract_references(tree: list[HierarchyNode]) -> None:
+    """递归遍历树，提取每个节点中的法律引用标注。"""
+    for node in tree:
+        full = node.full_text()
+        if "《" in full:
+            refs = RE_LAW_REFERENCE.findall(full)
+            if refs:
+                node.law_references = refs
+        _extract_references(node.children)
 
 
 # ── 遍历辅助 ──────────────────────────────────────────────
@@ -199,4 +340,3 @@ def flatten_leaves(node: HierarchyNode) -> list[HierarchyNode]:
     for child in node.children:
         leaves.extend(flatten_leaves(child))
     return leaves
-

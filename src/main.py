@@ -17,7 +17,7 @@ import click
 
 from src.builder import build_markdown
 from src.extractor import extract_pdf
-from src.models import Level
+from src.models import DocType, Level
 from src.structure import parse_structure
 
 logger = logging.getLogger(__name__)
@@ -81,9 +81,9 @@ def convert(
     click.echo(f"  提取 | 行: {len(lines)} | 法规: {meta.name or '?'}", err=True)
 
     # Step 2: 结构识别
-    tree = parse_structure(lines)
+    tree = parse_structure(lines, doc_type=meta.doc_type)
     total_articles = sum(1 for top in tree for _ in _walk_articles(top))
-    click.echo(f"  结构 | 条: {total_articles}", err=True)
+    click.echo(f"  结构 | 条: {total_articles} | 类型: {meta.doc_type.value}", err=True)
 
     # Step 3: 生成 Markdown
     md = build_markdown(tree, meta, include_toc=toc, article_anchor=not no_anchor)
@@ -141,7 +141,7 @@ def batch(
 
         try:
             lines, meta = extract_pdf(str(pdf_path), max_pages=max_pages, filter_header_footer=not no_filter, ocr_mode=ocr)
-            tree = parse_structure(lines)
+            tree = parse_structure(lines, doc_type=meta.doc_type)
 
             md = build_markdown(tree, meta, include_toc=False, article_anchor=True)
             with open(out_path, "w", encoding="utf-8") as f:

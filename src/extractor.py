@@ -3,6 +3,12 @@
 封装 pdfplumber，提取文本的同时保留排版信息（坐标、字号、是否加粗），
 用于后续的层级推断和结构识别。
 
+优化特性：
+- 文本规范化（全角/半角统一、OCR 常见错误修正）
+- 文档类型自动检测（法律法规/判决书/司法解释）
+- 法律引用标注提取
+- 页眉页脚增强过滤
+
 用法:
     lines = extract_pdf("民法典.pdf")
     for line in lines:
@@ -12,12 +18,24 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections import Counter
 from pathlib import Path
 from typing import Literal, Optional
 
-from src.models import LawMeta, LineMeta
-from src.patterns import RE_AUTHORITY, RE_DATE, RE_DOC_ID, RE_HEADER_FOOTER
+import yaml
+
+from src.models import DocType, LawMeta, LineMeta
+from src.patterns import (
+    RE_AUTHORITY,
+    RE_CASE_NUMBER,
+    RE_DATE,
+    RE_DOC_ID,
+    RE_HEADER_FOOTER,
+    RE_JUDGMENT_TITLE,
+    RE_LAW_REFERENCE,
+    detect_doc_type,
+)
 
 _OcrMode = Literal["auto", "force", "off"]
 
@@ -26,6 +44,97 @@ logger = logging.getLogger(__name__)
 # pdfplumber 单页字符数硬限制，超出自动跳过
 _PAGE_CHAR_LIMIT = 200_000
 _OCR_BATCH_SIZE = 5
+
+# ── 文本规范化规则 ────────────────────────────────────────
+
+# 全角→半角映射（法律文本中不应替换的标点除外）
+_FULLWIDTH_MAP = str.maketrans({
+    "：": "：",   # 冒号保留全角（法律文本规范）
+    "；": "；",   # 分号保留全角
+    "，": "，",   # 逗号保留全角
+    "。": "。",   # 句号保留全角
+    "！": "！",   # 感叹号保留全角
+    "？": "？",   # 问号保留全角
+    "（": "（",   # 括号保留全角（法律编号使用）
+    "）": "）",   # 括号保留全角
+    "《": "《",   # 书名号保留
+    "》": "》",   # 书名号保留
+    "　": " ",    # 全角空格→半角
+    "─": "-",     # 长破折号
+    "—": "-",     # 破折号
+})
+
+# OCR 常见误识别修正
+_OCR_FIXES: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"l令"), "令"),
+    (re.compile(r"第[0O]条"), "第十条"),  # O/0 混淆
+    (re.compile(r"第[Il1]条"), "第一条"),  # l/I/1 混淆
+]
+
+# ── 替换配置加载 ──────────────────────────────────────────
+
+_replacements: list[tuple[re.Pattern, str]] | None = None
+_header_footer_sigs: list[re.Pattern] | None = None
+
+
+def _load_replace_config() -> None:
+    """加载 config/replace.yaml 中的替换规则（仅首次调用时加载）。"""
+    global _replacements, _header_footer_sigs
+
+    if _replacements is not None:
+        return
+
+    config_path = Path(__file__).resolve().parent.parent / "config" / "replace.yaml"
+    _replacements = []
+    _header_footer_sigs = []
+
+    if not config_path.exists():
+        return
+
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+
+        for item in cfg.get("replacements", []):
+            if isinstance(item, (list, tuple)) and len(item) == 2:
+                _replacements.append((re.compile(re.escape(item[0])), item[1]))
+
+        for sig in cfg.get("header_footer_signatures", []):
+            _header_footer_sigs.append(re.compile(re.escape(sig)))
+
+        logger.debug("加载替换规则: %d 条, 页眉页脚签名: %d 条",
+                     len(_replacements), len(_header_footer_sigs))
+    except Exception as e:
+        logger.warning("加载 replace.yaml 失败: %s", e)
+
+
+def normalize_text(text: str) -> str:
+    """对提取的文本进行规范化处理。
+
+    处理内容：
+    - 全角空格→半角空格
+    - OCR 常见误识别修正
+    - 自定义替换规则（config/replace.yaml）
+
+    注意：法律文本中的中文标点（，。：；等）保留全角，不做转换。
+    """
+    # 全角空格处理
+    text = text.replace("\u3000", " ")
+
+    # OCR 误识别修正
+    for pat, repl in _OCR_FIXES:
+        text = pat.sub(repl, text)
+
+    # 自定义替换规则
+    _load_replace_config()
+    if _replacements:
+        for pat, repl in _replacements:
+            text = pat.sub(repl, text)
+
+    # 多余空白压缩
+    text = re.sub(r" {2,}", " ", text)
+
+    return text.strip()
 
 
 def _process_pdf_page(
@@ -74,6 +183,10 @@ def _process_pdf_page(
             page_lines = _extract_page_lines(page, page_num)
     else:
         page_lines = _extract_page_lines(page, page_num)
+
+    # 对提取的文本进行规范化
+    for line in page_lines:
+        line.text = normalize_text(line.text)
 
     return page_lines, ocr_fallback_text
 
@@ -377,10 +490,18 @@ def _make_line_from_font(
 
 
 def _filter_lines(lines: list[LineMeta]) -> list[LineMeta]:
+    """过滤页眉页脚行。"""
+    _load_replace_config()
+
     filtered: list[LineMeta] = []
     for line in lines:
+        # 标准页眉页脚模式
         if RE_HEADER_FOOTER.match(line.text):
             continue
+        # 自定义页眉页脚签名
+        if _header_footer_sigs:
+            if any(sig.search(line.text) for sig in _header_footer_sigs):
+                continue
         filtered.append(line)
 
     filtered = _remove_cross_page_duplicates(filtered)
@@ -389,6 +510,7 @@ def _filter_lines(lines: list[LineMeta]) -> list[LineMeta]:
 
 
 def _remove_cross_page_duplicates(lines: list[LineMeta]) -> list[LineMeta]:
+    """移除跨页重复内容（页眉页脚）。"""
     text_page_counts: Counter = Counter()
     for line in lines:
         text_page_counts[(line.text, line.y0)] += 1
@@ -412,6 +534,7 @@ def _extract_meta_from_page(
     page_lines: list[LineMeta],
     ocr_fallback_text: str = "",
 ) -> None:
+    """从首页提取文档元数据，自动检测文档类型。"""
     # 优先使用已提取的行文本，避免重复调用 page.extract_text()
     text = "\n".join(l.text for l in page_lines)
 
@@ -420,20 +543,57 @@ def _extract_meta_from_page(
         text = ocr_fallback_text
         logger.debug("对元数据提取使用 OCR 回退文本")
 
+    # ── 文档类型检测 ──
+    meta.doc_type = DocType(detect_doc_type(text))
+
+    # ── 标题提取 ──
     title_candidates = [l.text for l in page_lines if l.font_size >= 14 and len(l.text) > 4]
     if title_candidates:
         meta.name = title_candidates[0]
 
+    # ── 文号提取 ──
     for m in RE_DOC_ID.finditer(text):
         meta.doc_id = m.group(0).strip()
         break
 
+    # ── 日期提取 ──
     dates = RE_DATE.findall(text)
     if dates:
         meta.publish_date = dates[0].strip()
         if len(dates) > 1:
             meta.effective_date = dates[1].strip()
 
+    # ── 制定机关提取 ──
     for m in RE_AUTHORITY.finditer(text):
         meta.issuing_authority = m.group(0).strip()
         break
+
+    # ── 判决书特有元数据 ──
+    if meta.doc_type == DocType.JUDGMENT:
+        _extract_judgment_meta(meta, text, page_lines)
+
+
+def _extract_judgment_meta(
+    meta: LawMeta,
+    text: str,
+    page_lines: list[LineMeta],
+) -> None:
+    """从判决书首页提取特有元数据。"""
+    # 案号
+    for m in RE_CASE_NUMBER.finditer(text):
+        meta.extra["case_number"] = m.group(0).strip()
+        break
+
+    # 法院名称和文书类型
+    for m in RE_JUDGMENT_TITLE.finditer(text):
+        court = m.group(2)
+        case_type = m.group(3)
+        doc_type_name = m.group(4)
+        meta.extra["court"] = court
+        meta.extra["judgment_type"] = f"{case_type}{doc_type_name}"
+        break
+
+    # 裁判日期（取最后一个日期）
+    dates = RE_DATE.findall(text)
+    if dates:
+        meta.extra["judgment_date"] = dates[-1].strip()

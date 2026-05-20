@@ -1,11 +1,12 @@
 """Markdown 组装层。
 
 将 HierarchyNode 树转换为完整的 Markdown 文档。
+支持法律法规和判决书两种文档类型的差异化输出。
 """
 
 from __future__ import annotations
 
-from src.models import HierarchyNode, LawMeta, Level
+from src.models import DocType, HierarchyNode, LawMeta, Level
 
 
 def build_markdown(
@@ -50,7 +51,7 @@ def build_markdown(
 
 
 def _write_metadata_header(parts: list[str], meta: LawMeta) -> None:
-    """写入 YAML-like 元数据头。"""
+    """写入 YAML-like 元数据头，根据文档类型输出不同字段。"""
     parts.append("---")
     if meta.name:
         parts.append(f"title: {meta.name}")
@@ -64,6 +65,22 @@ def _write_metadata_header(parts: list[str], meta: LawMeta) -> None:
         parts.append(f"authority: {meta.issuing_authority}")
     if meta.source_pdf:
         parts.append(f"source: {meta.source_pdf}")
+
+    # 文档类型
+    if meta.doc_type != DocType.UNKNOWN:
+        parts.append(f"doc_type: {meta.doc_type.value}")
+
+    # 判决书特有元数据
+    if meta.doc_type == DocType.JUDGMENT:
+        if "case_number" in meta.extra:
+            parts.append(f"case_number: {meta.extra['case_number']}")
+        if "court" in meta.extra:
+            parts.append(f"court: {meta.extra['court']}")
+        if "judgment_type" in meta.extra:
+            parts.append(f"judgment_type: {meta.extra['judgment_type']}")
+        if "judgment_date" in meta.extra:
+            parts.append(f"judgment_date: {meta.extra['judgment_date']}")
+
     parts.append("---")
     parts.append("")
 
@@ -106,11 +123,15 @@ def _render_node(
     # anchor 注释（仅在 ARTICLE 级别添加）
     if article_anchor and node.level == Level.ARTICLE and node.number:
         anchor_id = f"article-{node.number}"
-        # 尝试用中文转写为易读的 anchor
         parts.append(f"<!-- anchor: {anchor_id} -->")
+        parts.append("")
+
+    # 法律引用标注（仅在含引用的节点添加）
+    if node.law_references:
+        refs_str = ", ".join(node.law_references)
+        parts.append(f"<!-- references: {refs_str} -->")
         parts.append("")
 
     # 子节点（递归）
     for child in node.children:
         _render_node(parts, child, article_anchor=article_anchor)
-

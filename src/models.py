@@ -3,6 +3,7 @@
 定义整个流水线的数据结构：
 - LineMeta:      pdfplumber 提取的原始行，含坐标/字体信息
 - LawMeta:       法规级元数据（名称、文号、日期等）
+- JudgmentMeta:  判决书元数据（案号、法院、当事人等）
 - HierarchyNode: 层级节点（编/章/节/条/款/项）
 """
 
@@ -25,6 +26,12 @@ class Level(Enum):
     SUB_CLAUSE = "sub"     # 项
     ITEM = "item"          # 目
 
+    # 判决书专用层级
+    PARTY = "party"              # 当事人信息
+    PROCEDURE = "procedure"      # 诉讼记录
+    RULING = "ruling"            # 裁判结果
+    JUDGES = "judges"            # 审判人员署名
+
     def heading_level(self) -> int:
         """映射到 Markdown 标题层级。"""
         return {
@@ -32,6 +39,10 @@ class Level(Enum):
             Level.CHAPTER: 2,
             Level.SECTION: 3,
             Level.ARTICLE: 4,
+            Level.PARTY: 3,
+            Level.PROCEDURE: 3,
+            Level.RULING: 3,
+            Level.JUDGES: 3,
         }.get(self, 0)  # 0 = 正文段落，不做标题
 
     @classmethod
@@ -45,6 +56,16 @@ class Level(Enum):
             if label.startswith("第") and kw in label:
                 return lvl
         return None
+
+
+# ── 文档类型枚举 ──────────────────────────────────────────
+
+class DocType(Enum):
+    """文档类型枚举。"""
+    LAW = "law"                          # 法律法规
+    JUDGMENT = "judgment"                # 判决书/裁定书
+    INTERPRETATION = "interpretation"    # 司法解释
+    UNKNOWN = "unknown"
 
 
 # ── 原始行 ────────────────────────────────────────────────
@@ -74,6 +95,23 @@ class LawMeta:
     effective_date: str = ""           # 施行日期
     issuing_authority: str = ""        # 制定机关
     source_pdf: str = ""               # 源文件路径
+    doc_type: DocType = DocType.UNKNOWN  # 文档类型
+    extra: dict = field(default_factory=dict)
+
+
+# ── 判决书元数据 ──────────────────────────────────────────
+
+@dataclass
+class JudgmentMeta:
+    """从判决书 PDF 中抽取的元数据。"""
+    case_number: str = ""              # 案号
+    court: str = ""                    # 审理法院
+    judgment_type: str = ""            # 文书类型（判决书/裁定书/调解书等）
+    parties: list[str] = field(default_factory=list)  # 当事人列表
+    judges: list[str] = field(default_factory=list)   # 审判人员
+    clerk: str = ""                    # 书记员
+    judgment_date: str = ""            # 裁判日期
+    source_pdf: str = ""               # 源文件路径
     extra: dict = field(default_factory=dict)
 
 
@@ -95,6 +133,8 @@ class HierarchyNode:
     parent: Optional["HierarchyNode"] = field(default=None, repr=False)
     children: list["HierarchyNode"] = field(default_factory=list)
     page_num: int = 0
+    law_references: list[str] = field(default_factory=list)
+    # ↑ 该节点中引用的法律条文，如 ["《民法典》第一百四十三条"]
 
     def full_text(self) -> str:
         """标题+正文的合并文本。"""
@@ -112,4 +152,3 @@ class HierarchyNode:
     def hierarchy_str(self) -> str:
         """层级路径字符串，如 '第一编 总则 > 第一章 基本规定'。"""
         return " > ".join(self.hierarchy_path) if self.hierarchy_path else self.title
-
