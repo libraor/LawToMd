@@ -12,13 +12,13 @@ from __future__ import annotations
 import logging
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional, cast
 
 import click
 
 from src.builder import build_markdown
-from src.extractor import extract_pdf
-from src.models import DocType, Level
+from src.extractor import _OcrEngine, _OcrMode, extract_pdf
+from src.models import Level
 from src.structure import parse_structure
 
 logger = logging.getLogger(__name__)
@@ -110,8 +110,8 @@ def convert(
         str(pdf),
         max_pages=max_pages,
         filter_header_footer=not no_filter,
-        ocr_mode=ocr,
-        ocr_engine=ocr_engine,
+        ocr_mode=cast(_OcrMode, ocr),
+        ocr_engine=cast(_OcrEngine, ocr_engine),
     )
     click.echo(f"  提取 | 行: {len(lines)} | 法规: {meta.name or '?'}", err=True)
 
@@ -191,8 +191,8 @@ def batch(
                 str(pdf_path),
                 max_pages=max_pages,
                 filter_header_footer=not no_filter,
-                ocr_mode=ocr,
-                ocr_engine=ocr_engine,
+                ocr_mode=cast(_OcrMode, ocr),
+                ocr_engine=cast(_OcrEngine, ocr_engine),
             )
             tree = parse_structure(lines, doc_type=meta.doc_type)
 
