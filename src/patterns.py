@@ -37,7 +37,7 @@ RE_SECTION = re.compile(rf"^第{_CN_DIGITS_PATTERN}节")
 #   "第一条之一" "第十二条之二" "第十二条之三"
 #   NOT: "第一条文" "第一条款"（须有自然边界）
 RE_ARTICLE = re.compile(
-    rf"^第({_CN_DIGITS_PATTERN})条(之{_CN_DIGITS_PATTERN})?(?=\s|[，。,.\n]|$)"
+    rf"^第({_CN_DIGITS_PATTERN})条(之{_CN_DIGITS_PATTERN})?(?=\s|[，。,.\n（）()]|$)"
 )
 
 # 款（自然段 - 通过缩进/空白行判断，正则只辅助）
@@ -129,14 +129,6 @@ def detect_level(text: str) -> str:
 
 # ── 文档类型检测 ──────────────────────────────────────────
 
-class DocType:
-    """文档类型常量。"""
-    LAW = "law"                    # 法律法规
-    JUDGMENT = "judgment"          # 判决书/裁定书
-    INTERPRETATION = "interpretation"  # 司法解释
-    UNKNOWN = "unknown"
-
-
 def detect_doc_type(text: str) -> str:
     """根据首页文本判断文档类型。
 
@@ -148,21 +140,21 @@ def detect_doc_type(text: str) -> str:
     Returns
     -------
     str
-        DocType 常量之一。
+        文档类型常量之一，与 models.DocType 枚举值一致。
     """
     # 判决书：含法院名称 + 判决书类型
     if RE_JUDGMENT_TITLE.search(text):
-        return DocType.JUDGMENT
+        return "judgment"
 
     # 司法解释：含"法释〔YYYY〕XX号"
     if RE_JUDICIAL_INTERPRETATION.search(text):
-        return DocType.INTERPRETATION
+        return "interpretation"
 
     # 法律法规：含编/章/节/条结构
     if detect_level(text):
-        return DocType.LAW
+        return "law"
 
-    return DocType.UNKNOWN
+    return "unknown"
 
 
 # ── 元数据模式 ──────────────────────────────────────────

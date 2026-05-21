@@ -140,6 +140,8 @@ def _lines_to_judgment_nodes(lines: list[LineMeta]) -> list[HierarchyNode]:
         if not text:
             continue
 
+        level_key = detect_level(text)
+
         # 当事人信息
         if RE_PARTY.match(text):
             if current:
@@ -185,16 +187,17 @@ def _lines_to_judgment_nodes(lines: list[LineMeta]) -> list[HierarchyNode]:
             )
             nodes.append(current)
         # 法条结构（判决书中也可能引用法条）
-        elif detect_level(text) in _TITLE_LEVELS:
+        elif level_key in _TITLE_LEVELS:
             if current:
                 _trim_text(current)
-            level_key = detect_level(text)
             current = _make_node(level_key, text, line)
             nodes.append(current)
-        elif detect_level(text) in _SUB_LEVELS and current is not None:
-            sub_level_key = detect_level(text)
+        elif level_key in _SUB_LEVELS:
+            if current is None:
+                current = _make_orphan_node(line)
+                nodes.append(current)
             sub_node = HierarchyNode(
-                level=Level.SUB_CLAUSE if sub_level_key == "sub_clause" else Level.ITEM,
+                level=Level.SUB_CLAUSE if level_key == "sub_clause" else Level.ITEM,
                 title=text,
                 text=text,
                 page_num=line.page_num,

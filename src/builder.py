@@ -50,21 +50,33 @@ def build_markdown(
     return "\n".join(parts)
 
 
+def _yaml_escape(value: str) -> str:
+    """对 YAML 值进行安全转义，用双引号包裹含特殊字符的值。"""
+    if not value:
+        return '""'
+    # 需要转义的字符：冒号+空格、#、---、方括号、花括号、逗号、&、*、?、|、-、<、>、=、!、%、@、`、引号
+    if any(c in value for c in (':', '#', '[', ']', '{', '}', ',', '&', '*', '?', '|', '>', '=', '!', '%', '@', '`')) or value.startswith(('-', ' ')) or '\n' in value:
+        # 双引号内需要转义双引号和反斜杠
+        escaped = value.replace('\\', '\\\\').replace('"', '\\"')
+        return f'"{escaped}"'
+    return value
+
+
 def _write_metadata_header(parts: list[str], meta: LawMeta) -> None:
     """写入 YAML-like 元数据头，根据文档类型输出不同字段。"""
     parts.append("---")
     if meta.name:
-        parts.append(f"title: {meta.name}")
+        parts.append(f"title: {_yaml_escape(meta.name)}")
     if meta.doc_id:
-        parts.append(f"doc_id: {meta.doc_id}")
+        parts.append(f"doc_id: {_yaml_escape(meta.doc_id)}")
     if meta.publish_date:
-        parts.append(f"publish_date: {meta.publish_date}")
+        parts.append(f"publish_date: {_yaml_escape(meta.publish_date)}")
     if meta.effective_date:
-        parts.append(f"effective_date: {meta.effective_date}")
+        parts.append(f"effective_date: {_yaml_escape(meta.effective_date)}")
     if meta.issuing_authority:
-        parts.append(f"authority: {meta.issuing_authority}")
+        parts.append(f"authority: {_yaml_escape(meta.issuing_authority)}")
     if meta.source_pdf:
-        parts.append(f"source: {meta.source_pdf}")
+        parts.append(f"source: {_yaml_escape(meta.source_pdf)}")
 
     # 文档类型
     if meta.doc_type != DocType.UNKNOWN:
@@ -73,13 +85,13 @@ def _write_metadata_header(parts: list[str], meta: LawMeta) -> None:
     # 判决书特有元数据
     if meta.doc_type == DocType.JUDGMENT:
         if "case_number" in meta.extra:
-            parts.append(f"case_number: {meta.extra['case_number']}")
+            parts.append(f"case_number: {_yaml_escape(meta.extra['case_number'])}")
         if "court" in meta.extra:
-            parts.append(f"court: {meta.extra['court']}")
+            parts.append(f"court: {_yaml_escape(meta.extra['court'])}")
         if "judgment_type" in meta.extra:
-            parts.append(f"judgment_type: {meta.extra['judgment_type']}")
+            parts.append(f"judgment_type: {_yaml_escape(meta.extra['judgment_type'])}")
         if "judgment_date" in meta.extra:
-            parts.append(f"judgment_date: {meta.extra['judgment_date']}")
+            parts.append(f"judgment_date: {_yaml_escape(meta.extra['judgment_date'])}")
 
     parts.append("---")
     parts.append("")

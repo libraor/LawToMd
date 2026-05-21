@@ -121,6 +121,11 @@ class LiteOcrBackend:
             bbox, text, confidence = item
             if not text or not text.strip():
                 continue
+            # RapidOCR 部分版本返回字符串类型的置信度
+            try:
+                confidence = float(confidence)
+            except (TypeError, ValueError):
+                confidence = 0.0
             if confidence < min_confidence:
                 logger.debug(
                     "跳过低置信度文本 '%s' (conf=%.3f)", text, confidence

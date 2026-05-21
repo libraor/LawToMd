@@ -48,18 +48,8 @@ _OCR_BATCH_SIZE = 5
 
 # ── 文本规范化规则 ────────────────────────────────────────
 
-# 全角→半角映射（法律文本中不应替换的标点除外）
+# 全角→半角映射（仅实际需要转换的字符；中文标点保留全角）
 _FULLWIDTH_MAP = str.maketrans({
-    "：": "：",   # 冒号保留全角（法律文本规范）
-    "；": "；",   # 分号保留全角
-    "，": "，",   # 逗号保留全角
-    "。": "。",   # 句号保留全角
-    "！": "！",   # 感叹号保留全角
-    "？": "？",   # 问号保留全角
-    "（": "（",   # 括号保留全角（法律编号使用）
-    "）": "）",   # 括号保留全角
-    "《": "《",   # 书名号保留
-    "》": "》",   # 书名号保留
     "　": " ",    # 全角空格→半角
     "─": "-",     # 长破折号
     "—": "-",     # 破折号
@@ -68,8 +58,10 @@ _FULLWIDTH_MAP = str.maketrans({
 # OCR 常见误识别修正
 _OCR_FIXES: list[tuple[re.Pattern, str]] = [
     (re.compile(r"l令"), "令"),
-    (re.compile(r"第[0O]条"), "第十条"),  # O/0 混淆
-    (re.compile(r"第[Il1]条"), "第一条"),  # l/I/1 混淆
+    (re.compile(r"第0条"), "第十条"),   # 0 通常是"十"的误识别
+    (re.compile(r"第O条"), "第〇条"),   # O 通常是"〇"的误识别
+    (re.compile(r"第I条"), "第一条"),   # I 通常是"一"的误识别
+    (re.compile(r"第l条"), "第一条"),   # l 通常是"一"的误识别
 ]
 
 # ── 替换配置加载 ──────────────────────────────────────────
@@ -119,8 +111,8 @@ def normalize_text(text: str) -> str:
 
     注意：法律文本中的中文标点（，。：；等）保留全角，不做转换。
     """
-    # 全角空格处理
-    text = text.replace("\u3000", " ")
+    # 全角字符规范化（空格、破折号等）
+    text = text.translate(_FULLWIDTH_MAP)
 
     # OCR 误识别修正
     for pat, repl in _OCR_FIXES:
@@ -258,13 +250,15 @@ def extract_pdf(
 
             # 每批重新获取引擎（单线程，轻量）
             engine = None
+            ocr_available = False
             try:
                 from src.ocr import OcrEngine
 
                 # 前一批已 reset，这里会重新初始化
                 engine = OcrEngine.get_instance(backend=ocr_engine)
+                ocr_available = True
             except ImportError:
-                pass
+                logger.warning("OCR 依赖未安装，所有页面使用 pdfplumber 提取")
 
             with pdfplumber.open(pdf_path) as pdf:
                 for page_idx in range(batch_start, batch_end):
@@ -279,8 +273,9 @@ def extract_pdf(
                         )
                         continue
 
+                    effective_ocr_mode = ocr_mode if ocr_available else "off"
                     page_lines, ocr_fallback_text = _process_pdf_page(
-                        page, page_num, pdf_path, ocr_mode, ocr_engine=ocr_engine, engine=engine,
+                        page, page_num, pdf_path, effective_ocr_mode, ocr_engine=ocr_engine, engine=engine,
                     )
 
                     for l in page_lines:

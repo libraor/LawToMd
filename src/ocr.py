@@ -117,6 +117,11 @@ class OcrEngine:
         if backend != "auto":
             cls._backend_choice = backend
 
+        if cls._instance is not None and backend != "auto" and backend != cls._instance._backend_name:
+            # backend 参数变化，需要重建实例
+            logger.info("OCR 后端切换: %s → %s，重建实例", cls._instance._backend_name, backend)
+            cls.reset()
+
         if cls._instance is None:
             with _engine_lock:
                 if cls._instance is None:
