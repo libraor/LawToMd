@@ -1,6 +1,6 @@
-"""轻量级 OCR 后端（基于 RapidOCR）。
+"""轻量级 OCR 后端（基于 EasyOCR）。
 
-使用 RapidOCR (ONNX Runtime) 替代 PaddleOCR，大幅降低内存占用和计算复杂度，
+使用 EasyOCR (PyTorch) 替代 PaddleOCR，降低内存占用和计算复杂度，
 适合低性能设备。在保证基本识别准确率的前提下优化资源消耗。
 
 用法:
@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from collections.abc import Sequence
 
 from src.models import LineMeta
 
@@ -25,9 +25,9 @@ logger = logging.getLogger(__name__)
 
 
 def is_lite_available() -> bool:
-    """检查 RapidOCR 依赖是否可导入（不触发初始化）。"""
+    """检查 EasyOCR 依赖是否可导入（不触发初始化）。"""
     try:
-        from rapidocr_onnxruntime import RapidOCR  # noqa: F401
+        import easyocr  # noqa: F401
 
         return True
     except Exception:
@@ -38,14 +38,15 @@ def is_lite_available() -> bool:
 
 
 class LiteOcrBackend:
-    """RapidOCR 轻量级后端。
+    """EasyOCR 轻量级后端。
 
-    基于 ONNX Runtime 推理，内存占用远低于 PaddleOCR。
+    基于 PyTorch 推理，内存占用远低于 PaddleOCR。
     延迟初始化，首次调用 ocr_page() 时才加载模型。
+    自动检测 GPU 可用性，无 GPU 时使用 CPU 模式。
     """
 
     def __init__(self) -> None:
-        self._ocr = None
+        self._reader = None
         self._initialized = False
 
     @property
@@ -54,21 +55,35 @@ class LiteOcrBackend:
 
     @property
     def display_name(self) -> str:
-        return "RapidOCR (轻量版)"
+        return "EasyOCR (轻量版)"
+
+    def _detect_gpu_available(self) -> bool:
+        """检测 PyTorch 是否可使用 GPU。"""
+        try:
+            import torch
+
+            return torch.cuda.is_available()
+        except Exception:
+            return False
 
     def _initialize(self) -> None:
-        """延迟导入 RapidOCR 并初始化引擎。"""
+        """延迟导入 EasyOCR 并初始化引擎。"""
         if self._initialized:
             return
         try:
-            from rapidocr_onnxruntime import RapidOCR
+            import easyocr
 
-            self._ocr = RapidOCR()
+            use_gpu = self._detect_gpu_available()
+            self._reader = easyocr.Reader(
+                ["ch_sim", "en"],
+                gpu=use_gpu,
+            )
             self._initialized = True
-            logger.info("RapidOCR 引擎初始化完成 (轻量模式, ONNX Runtime)")
+            gpu_status = "GPU" if use_gpu else "CPU"
+            logger.info("EasyOCR 引擎初始化完成 (轻量模式, %s)", gpu_status)
         except ImportError as e:
             raise ImportError(
-                "RapidOCR 依赖未安装。请运行: pip install 'lawtomd[ocr-lite]'"
+                "EasyOCR 依赖未安装。请运行: pip install 'lawtomd[ocr-lite]'"
             ) from e
 
     def ocr_page(
@@ -99,8 +114,8 @@ class LiteOcrBackend:
         if not self._initialized:
             self._initialize()
 
-        if self._ocr is None:
-            raise RuntimeError("RapidOCR 后端未初始化")
+        if self._reader is None:
+            raise RuntimeError("EasyOCR 后端未初始化")
 
         import numpy as np
 
@@ -109,9 +124,7 @@ class LiteOcrBackend:
         else:
             img_input = image
 
-        # RapidOCR 返回 (result, elapse)
-        # result: list of [bbox, text, confidence] 或 None
-        result, _ = self._ocr(img_input)
+        result = self._reader.readtext(img_input)
 
         if not result:
             return []
@@ -121,7 +134,6 @@ class LiteOcrBackend:
             bbox, text, confidence = item
             if not text or not text.strip():
                 continue
-            # RapidOCR 部分版本返回字符串类型的置信度
             try:
                 confidence = float(confidence)
             except (TypeError, ValueError):
@@ -132,30 +144,30 @@ class LiteOcrBackend:
                 )
                 continue
 
-            line = _rapid_bbox_to_linemeta(bbox, text, page_num, dpi=dpi)
+            line = _easyocr_bbox_to_linemeta(bbox, text, page_num, dpi=dpi)
             lines.append(line)
 
-        lines.sort(key=lambda l: (l.y0, l.x0))
+        lines.sort(key=lambda line: (line.y0, line.x0))
         return lines
 
     def release(self) -> None:
         """释放引擎资源。"""
-        self._ocr = None
+        self._reader = None
         self._initialized = False
 
 
 # ── 坐标转换 ──────────────────────────────────────────────
 
 
-def _rapid_bbox_to_linemeta(
-    bbox: list[list[float]],
+def _easyocr_bbox_to_linemeta(
+    bbox: Sequence[Sequence[float | int]],
     text: str,
     page_num: int,
     dpi: int = 300,
 ) -> LineMeta:
-    """将 RapidOCR 的 bbox 转换为 LineMeta。
+    """将 EasyOCR 的 bbox 转换为 LineMeta。
 
-    RapidOCR bbox 格式: [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
+    EasyOCR bbox 格式: [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
     坐标单位为像素，需缩放回 PDF 点空间 (72 DPI)。
     """
     scale = 72.0 / dpi

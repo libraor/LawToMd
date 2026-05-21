@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import sys
 from pathlib import Path
-from typing import Literal, Optional, cast
+from typing import Optional, cast
 
 import click
 
@@ -58,7 +58,7 @@ def _show_device_profile(ocr_engine: str) -> None:
     elif ocr_engine == "paddle":
         click.echo("OCR 方案: PaddleOCR (高性能, 用户手动选择)", err=True)
     elif ocr_engine == "lite":
-        click.echo("OCR 方案: RapidOCR (轻量版, 用户手动选择)", err=True)
+        click.echo("OCR 方案: EasyOCR (轻量版, 用户手动选择)", err=True)
 
 
 # ── 单文件转换 ────────────────────────────────────────────
@@ -82,7 +82,7 @@ def _show_device_profile(ocr_engine: str) -> None:
     type=click.Choice(["auto", "paddle", "lite"]),
     default="auto",
     show_default=True,
-    help="OCR 引擎: auto=根据设备性能自动推荐, paddle=PaddleOCR高性能, lite=RapidOCR轻量版",
+    help="OCR 引擎: auto=根据设备性能自动推荐, paddle=PaddleOCR高性能, lite=EasyOCR轻量版",
 )
 def convert(
     pdf_path: str,
@@ -149,7 +149,7 @@ def convert(
     type=click.Choice(["auto", "paddle", "lite"]),
     default="auto",
     show_default=True,
-    help="OCR 引擎: auto=根据设备性能自动推荐, paddle=PaddleOCR高性能, lite=RapidOCR轻量版",
+    help="OCR 引擎: auto=根据设备性能自动推荐, paddle=PaddleOCR高性能, lite=EasyOCR轻量版",
 )
 def batch(
     pdf_dir: str,
@@ -232,13 +232,13 @@ def profile() -> None:
 
     click.echo("OCR 后端可用性:", err=True)
     click.echo(f"  PaddleOCR (高性能): {'已安装' if paddle_ok else '未安装 (pip install lawtomd[ocr])'}", err=True)
-    click.echo(f"  RapidOCR (轻量版): {'已安装' if lite_ok else '未安装 (pip install lawtomd[ocr-lite])'}", err=True)
+    click.echo(f"  EasyOCR (轻量版): {'已安装' if lite_ok else '未安装 (pip install lawtomd[ocr-lite])'}", err=True)
     click.echo("", err=True)
 
     if recommended == "paddle" and not paddle_ok:
-        click.echo("注意: 推荐 PaddleOCR 但未安装，将回退到 RapidOCR", err=True)
+        click.echo("注意: 推荐 PaddleOCR 但未安装，将回退到 EasyOCR", err=True)
     elif recommended == "lite" and not lite_ok:
-        click.echo("注意: 推荐 RapidOCR 但未安装，将回退到 PaddleOCR", err=True)
+        click.echo("注意: 推荐 EasyOCR 但未安装，将回退到 PaddleOCR", err=True)
 
 
 # ── 辅助 ──────────────────────────────────────────────────

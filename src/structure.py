@@ -324,7 +324,7 @@ def _extract_references(tree: list[HierarchyNode]) -> None:
     for node in tree:
         full = node.full_text()
         if "《" in full:
-            refs = RE_LAW_REFERENCE.findall(full)
+            refs = [m.group(0) for m in RE_LAW_REFERENCE.finditer(full)]
             if refs:
                 node.law_references = refs
         _extract_references(node.children)

@@ -47,8 +47,8 @@ RE_SUB_CLAUSE_PAREN = re.compile(rf"^[（(][{_CN_DIGITS}]+[）)]")
 # 项： "1." "2." "（1）" "（2）"
 RE_SUB_CLAUSE_NUM = re.compile(rf"^[（(]?{_ARABIC_NUM}[．.、）)]")
 
-# 目： "A." "a." "(a)" 或 "1)" 等更深层缩进
-RE_ITEM = re.compile(r"^[（(]?[a-zA-Z][）)]|(?<=\s)\d+\)")
+# 目： "A." "a." "(a)" 等更深层缩进
+RE_ITEM = re.compile(r"^[（(]?[a-zA-Z][）)]")
 
 # ── 判决书结构模式 ────────────────────────────────────────
 
@@ -262,10 +262,12 @@ def strip_article_number(text: str) -> str:
 
 
 def parse_article_number(text: str) -> str:
-    """提取条号数字（中文），如 '第一条' → '一'。"""
+    """提取条号数字（中文），如 '第一条' → '一'，'第一条之一' → '一之一'。"""
     m = RE_ARTICLE.match(text)
     if m:
-        return m.group(1)
+        number = m.group(1)
+        suffix = m.group(2) or ""
+        return number + suffix
     return ""
 
 
@@ -277,4 +279,4 @@ def extract_law_references(text: str) -> list[str]:
     list[str]
         所有匹配的法律引用，如 '《民法典》第一百四十三条'。
     """
-    return RE_LAW_REFERENCE.findall(text)
+    return [m.group(0) for m in RE_LAW_REFERENCE.finditer(text)]

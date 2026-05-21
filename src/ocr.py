@@ -1,6 +1,6 @@
 """OCR 引擎调度器。
 
-根据设备性能自动选择 OCR 后端（PaddleOCR 高性能 或 RapidOCR 轻量版），
+根据设备性能自动选择 OCR 后端（PaddleOCR 高性能 或 EasyOCR 轻量版），
 也支持用户手动指定。提供统一的 OcrEngine 接口，对上层调用者透明。
 
 公共 API 保持向后兼容：
@@ -17,10 +17,14 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from threading import Lock
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from src.models import LineMeta
-from src.profiler import DeviceProfile, PerformanceTier, detect_device_profile, recommend_ocr_backend
+from src.profiler import DeviceProfile, detect_device_profile, recommend_ocr_backend
+
+if TYPE_CHECKING:
+    from src.ocr_paddle import PaddleOcrBackend
+    from src.ocr_lite import LiteOcrBackend
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +88,7 @@ class OcrEngine:
 
     def __init__(self, backend: str = "auto") -> None:
         self._backend_name: str = ""
-        self._backend = None
+        self._backend: PaddleOcrBackend | LiteOcrBackend | None = None
         self._profile: Optional[DeviceProfile] = None
 
         # 解析后端选择
@@ -163,17 +167,17 @@ class OcrEngine:
 
         # 首选不可用，回退
         if preferred == "paddle" and lite_ok:
-            logger.info("PaddleOCR 不可用，回退到 RapidOCR 轻量版")
+            logger.info("PaddleOCR 不可用，回退到 EasyOCR")
             return "lite"
         if preferred == "lite" and paddle_ok:
-            logger.info("RapidOCR 不可用，回退到 PaddleOCR")
+            logger.info("EasyOCR 不可用，回退到 PaddleOCR")
             return "paddle"
 
         # 都不可用
         raise ImportError(
             "无可用的 OCR 后端。请安装至少一种:\n"
             "  pip install 'lawtomd[ocr]'      # PaddleOCR 高性能版\n"
-            "  pip install 'lawtomd[ocr-lite]'  # RapidOCR 轻量版"
+            "  pip install 'lawtomd[ocr-lite]'  # EasyOCR 轻量版"
         )
 
     def _create_backend(self, name: str):
@@ -295,7 +299,7 @@ def pdf_page_to_image(
         pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
         from PIL import Image
 
-        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
         # 显式释放 pixmap 内存
         pix = None
         return img, effective_dpi

@@ -1,11 +1,17 @@
-# 核心依赖
+# 核心依赖（必装）
 pdfplumber>=0.10
 click>=8.0
+pyyaml>=6.0
 
-# OCR 支持（扫描版 PDF）
-paddlepaddle>=3.0.0
-paddleocr>=2.10.0
-opencv-contrib-python>=4.13.0
+# PaddleOCR 高性能后端（可选，pip install ".[ocr]"）
+paddlepaddle==3.0.0
+paddleocr==2.10.0
+opencv-contrib-python==4.13.0.92
+PyMuPDF>=1.23.0
+Pillow>=10.0
+
+# EasyOCR 轻量版后端（可选，pip install ".[ocr-lite]"）
+easyocr>=1.7.0
 PyMuPDF>=1.23.0
 Pillow>=10.0
 

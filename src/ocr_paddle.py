@@ -14,7 +14,7 @@ GPU 自动检测和 OCR 结果→LineMeta 转换。
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from collections.abc import Sequence
 
 from src.models import LineMeta
 
@@ -169,7 +169,7 @@ class PaddleOcrBackend:
             line = _paddle_bbox_to_linemeta(bbox, text, page_num, dpi=dpi)
             lines.append(line)
 
-        lines.sort(key=lambda l: (l.y0, l.x0))
+        lines.sort(key=lambda line: (line.y0, line.x0))
         return lines
 
     def release(self) -> None:
@@ -182,7 +182,7 @@ class PaddleOcrBackend:
 
 
 def _paddle_bbox_to_linemeta(
-    bbox: list[list[float]],
+    bbox: Sequence[Sequence[float | int]],
     text: str,
     page_num: int,
     dpi: int = 300,

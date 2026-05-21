@@ -23,8 +23,6 @@ from collections import Counter
 from pathlib import Path
 from typing import Literal, Optional
 
-import yaml
-
 from src.models import DocType, LawMeta, LineMeta
 from src.patterns import (
     RE_AUTHORITY,
@@ -33,7 +31,6 @@ from src.patterns import (
     RE_DOC_ID,
     RE_HEADER_FOOTER,
     RE_JUDGMENT_TITLE,
-    RE_LAW_REFERENCE,
     detect_doc_type,
 )
 
@@ -85,6 +82,8 @@ def _load_replace_config() -> None:
         return
 
     try:
+        import yaml
+
         with open(config_path, encoding="utf-8") as f:
             cfg = yaml.safe_load(f)
 
@@ -163,7 +162,7 @@ def _process_pdf_page(
 
             image, effective_dpi = pdf_page_to_image(pdf_path, page_num - 1, dpi=300)
             page_lines = engine.ocr_page(image, page_num=page_num, dpi=effective_dpi)
-            ocr_fallback_text = "\n".join(l.text for l in page_lines)
+            ocr_fallback_text = "\n".join(line.text for line in page_lines)
             logger.info("Page %d: OCR extracted %d lines", page_num, len(page_lines))
         except ImportError as e:
             logger.warning(
@@ -212,7 +211,7 @@ def extract_pdf(
         OCR 引擎选择（默认 "auto"）：
         - "auto"   → 根据设备性能自动推荐
         - "paddle" → PaddleOCR 高性能后端
-        - "lite"   → RapidOCR 轻量版后端
+        - "lite"   → EasyOCR 轻量版后端
 
     Returns
     -------
@@ -278,8 +277,8 @@ def extract_pdf(
                         page, page_num, pdf_path, effective_ocr_mode, ocr_engine=ocr_engine, engine=engine,
                     )
 
-                    for l in page_lines:
-                        lines.append(l)
+                    for line in page_lines:
+                        lines.append(line)
 
                     if not meta_extracted and page_num == 1:
                         _extract_meta_from_page(
@@ -324,8 +323,8 @@ def extract_pdf(
                     page, page_num, pdf_path, ocr_mode, ocr_engine=ocr_engine,
                 )
 
-                for l in page_lines:
-                    lines.append(l)
+                for line in page_lines:
+                    lines.append(line)
 
                 if page_num == 1:
                     _extract_meta_from_page(
@@ -343,7 +342,7 @@ def extract_pdf(
             gc.collect()
 
     # 排序：先页码，后 y0（从上到下），再 x0（从左到右）
-    lines.sort(key=lambda l: (l.page_num, l.y0, l.x0))
+    lines.sort(key=lambda line: (line.page_num, line.y0, line.x0))
 
     if filter_header_footer:
         lines = _filter_lines(lines)
@@ -539,7 +538,7 @@ def _extract_meta_from_page(
 ) -> None:
     """从首页提取文档元数据，自动检测文档类型。"""
     # 优先使用已提取的行文本，避免重复调用 page.extract_text()
-    text = "\n".join(l.text for l in page_lines)
+    text = "\n".join(line.text for line in page_lines)
 
     # pdfplumber 无文字时使用 OCR 文本回退
     if not text and ocr_fallback_text:
@@ -550,7 +549,7 @@ def _extract_meta_from_page(
     meta.doc_type = DocType(detect_doc_type(text))
 
     # ── 标题提取 ──
-    title_candidates = [l.text for l in page_lines if l.font_size >= 14 and len(l.text) > 4]
+    title_candidates = [line.text for line in page_lines if line.font_size >= 14 and len(line.text) > 4]
     if title_candidates:
         meta.name = title_candidates[0]
 
