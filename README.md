@@ -20,7 +20,7 @@
 ## 功能
 
 - 📄 **PDF 文本提取** — 基于 pdfplumber，保留坐标、字号、加粗等信息，过滤页眉页脚
-- 🔍 **双 OCR 后端** — PaddleOCR（高性能）+ EasyOCR（轻量版），根据设备性能自动推荐
+- 🔍 **双 OCR 后端** — PaddleOCR（高性能）+ RapidOCR（轻量版），根据设备性能自动推荐
 - 🏛 **多文档类型支持** — 自动检测并适配法律法规、判决书、司法解释的结构解析策略
 - ⚖️ **法律术语识别** — 覆盖编/章/节/条/款/项/目结构，当事人/诉讼记录/裁判结果等判决书元素
 - 🔗 **引用标注提取** — 自动识别并输出法律引用（`《XXX》第X条第X款第X项`）
@@ -418,7 +418,7 @@ LawToMd/
 │   ├── builder.py        # Markdown 组装
 │   ├── ocr.py            # OCR 引擎调度器（统一接口）
 │   ├── ocr_paddle.py     # PaddleOCR 高性能后端
-│   ├── ocr_lite.py       # EasyOCR 轻量版后端
+│   ├── ocr_lite.py       # RapidOCR 轻量版后端
 │   └── profiler.py       # 设备性能检测 + OCR 方案推荐
 ├── config/
 │   └── replace.yaml      # 常用词替换规则

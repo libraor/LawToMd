@@ -1,7 +1,7 @@
 """设备性能检测模块。
 
 评估用户计算机的 CPU 处理能力、内存容量和图形处理性能，
-据此推荐合适的 OCR 方案（高性能 PaddleOCR 或轻量版 EasyOCR）。
+据此推荐合适的 OCR 方案（高性能 PaddleOCR 或轻量版 RapidOCR）。
 
 用法:
     from src.profiler import detect_device_profile, recommend_ocr_backend
@@ -60,7 +60,7 @@ class DeviceProfile:
         """返回人类可读的性能摘要，用于 CLI 展示。"""
         gpu_info = self.gpu_name if self.has_gpu else "无"
         tier_label = "高" if self.is_high_performance else "低"
-        backend_name = "PaddleOCR (高性能)" if self.is_high_performance else "EasyOCR (轻量版)"
+        backend_name = "PaddleOCR (高性能)" if self.is_high_performance else "RapidOCR (轻量版)"
 
         lines = [
             "设备性能检测:",

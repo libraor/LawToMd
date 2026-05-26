@@ -28,3 +28,4 @@ tests/fixtures/民法典-测试用.pdf
 CLAUDE.md
 nul
 .coverage
+uv.lock

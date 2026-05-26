@@ -1,6 +1,6 @@
 """OCR 引擎调度器。
 
-根据设备性能自动选择 OCR 后端（PaddleOCR 高性能 或 EasyOCR 轻量版），
+根据设备性能自动选择 OCR 后端（PaddleOCR 高性能 或 RapidOCR 轻量版），
 也支持用户手动指定。提供统一的 OcrEngine 接口，对上层调用者透明。
 
 公共 API 保持向后兼容：
@@ -154,30 +154,31 @@ class OcrEngine:
         str
             实际可用的后端名称。
         """
-        from src.ocr_paddle import is_paddle_available
-        from src.ocr_lite import is_lite_available
-
-        paddle_ok = is_paddle_available()
-        lite_ok = is_lite_available()
-
-        if preferred == "paddle" and paddle_ok:
-            return "paddle"
-        if preferred == "lite" and lite_ok:
-            return "lite"
-
-        # 首选不可用，回退
-        if preferred == "paddle" and lite_ok:
-            logger.info("PaddleOCR 不可用，回退到 EasyOCR")
-            return "lite"
-        if preferred == "lite" and paddle_ok:
-            logger.info("EasyOCR 不可用，回退到 PaddleOCR")
-            return "paddle"
+        # 先检查首选后端，避免同时加载两个后端导致内存不足
+        if preferred == "paddle":
+            from src.ocr_paddle import is_paddle_available
+            if is_paddle_available():
+                return "paddle"
+            # 回退到 lite
+            from src.ocr_lite import is_lite_available
+            if is_lite_available():
+                logger.info("PaddleOCR 不可用，回退到 RapidOCR")
+                return "lite"
+        else:
+            from src.ocr_lite import is_lite_available
+            if is_lite_available():
+                return "lite"
+            # 回退到 paddle
+            from src.ocr_paddle import is_paddle_available
+            if is_paddle_available():
+                logger.info("RapidOCR 不可用，回退到 PaddleOCR")
+                return "paddle"
 
         # 都不可用
         raise ImportError(
             "无可用的 OCR 后端。请安装至少一种:\n"
             "  pip install 'lawtomd[ocr]'      # PaddleOCR 高性能版\n"
-            "  pip install 'lawtomd[ocr-lite]'  # EasyOCR 轻量版"
+            "  pip install 'lawtomd[ocr-lite]'  # RapidOCR 轻量版"
         )
 
     def _create_backend(self, name: str):

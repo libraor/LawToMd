@@ -211,7 +211,7 @@ def extract_pdf(
         OCR 引擎选择（默认 "auto"）：
         - "auto"   → 根据设备性能自动推荐
         - "paddle" → PaddleOCR 高性能后端
-        - "lite"   → EasyOCR 轻量版后端
+        - "lite"   → RapidOCR 轻量版后端
 
     Returns
     -------
