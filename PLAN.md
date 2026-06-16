@@ -18,27 +18,40 @@
 
 ---
 
-## 计划中
+## Phase 1 — 稳定性修复（P0）
 
-### P0 — 稳定性
+- [x] 1. 修复目录去重：比较 `level` + `title` 而非仅 `title`，防止不同层级同名节点误合并
+- [x] 2. 修复 `extract_pdf` 双重打开 PDF，合并为单次打开
+- [x] 3. 将 `_OcrMode`/`_OcrEngine` 移到公共类型模块（`src/types.py`）
+- [x] 4. 补充 `cn_to_arabic`、`detect_doc_type`、`extract_law_references` 单元测试
+- [x] 5. 补充 `normalize_text`、`_filter_lines`、元数据提取单元测试
+- [x] 6. E2E 测试重构为 pytest 标准格式
 
-- [ ] 增加 extractor 单元测试（页眉页脚过滤、跨页去重、元数据提取）
-- [ ] 增加 OCR 模式集成测试（mock PaddleOCR）
-- [ ] 处理 pdfplumber 非标准编码 PDF 的异常
+## Phase 2 — 架构重构（P1）
 
-### P1 — 功能增强
+- [x] 7. 拆分 `extractor.py` → `normalizer.py` + `header_footer.py` + `metadata.py`
+- [x] 8. 删除 `_OCR_FIXES` 硬编码，统一用 `replace.yaml` 作为单一数据源
+- [x] 9. OCR 后端 ABC 抽象（`OcrBackendProtocol`）
+- [x] 10. 合并 `_lines_to_nodes` / `_lines_to_judgment_nodes` 公共逻辑
+- [x] 11. `LEVEL_ORDER` 移入 `Level` 枚举，消除独立字典
+- [x] 12. 全局可变状态线程安全化（`lru_cache` 或 `Lock`）
 
-- [ ] 启用 `config/replace.yaml`：常用词/标点规范化替换
-- [ ] 条号中文→阿拉伯数字转换（anchor ID 可读性）
-- [ ] 支持 `--format json` 输出结构化 JSON
-- [ ] 并行处理：多线程/多进程批量转换
+## Phase 3 — 功能增强（P2）
 
-### P2 — 体验优化
+- [x] 13. 款（CLAUSE）层级识别：基于 x0 缩进检测
+- [x] 14. 前导内容保留：收集到 `LawMeta.extra["preamble"]`
+- [x] 15. 元数据标题提取改为相对字号，替代 `font_size >= 14` 硬编码
+- [x] 16. 法律引用生成 Markdown 链接，替代 HTML 注释
+- [x] 17. `--format json` 输出结构化 JSON
+- [x] 18. 表格提取：`page.extract_tables()` → Markdown 表格
 
-- [ ] 进度条（tqdm）显示批量处理进度
-- [ ] 生成 Markdown 目录时添加页码链接
-- [ ] 支持自定义层级→标题映射配置
-- [ ] 条文修订标注（新旧法对比模式）
+## Phase 4 — 体验优化（P3）
+
+- [x] 19. 批量处理并行化（`ProcessPoolExecutor`）
+- [x] 20. 进度条（tqdm）显示批量处理进度
+- [x] 21. `--validate` 校验模式：条号连续性检查
+- [x] 22. `cn_to_arabic` 支持"万"级别
+- [x] 23. `_yaml_escape` 改用 `yaml.safe_dump`，消除手写转义
 
 ---
 

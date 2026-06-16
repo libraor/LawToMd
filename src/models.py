@@ -45,6 +45,23 @@ class Level(Enum):
             Level.JUDGES: 3,
         }.get(self, 0)  # 0 = 正文段落，不做标题
 
+    def sort_order(self) -> int:
+        """层级排序值（越小越上层），用于建树时的优先级比较。"""
+        return {
+            Level.PART: 1,
+            Level.CHAPTER: 2,
+            Level.SECTION: 3,
+            Level.ARTICLE: 4,
+            Level.CLAUSE: 5,
+            Level.SUB_CLAUSE: 6,
+            Level.ITEM: 7,
+            # 判决书层级（与法规同级并列）
+            Level.PARTY: 3,
+            Level.PROCEDURE: 3,
+            Level.RULING: 3,
+            Level.JUDGES: 4,
+        }.get(self, 99)
+
     @classmethod
     def from_label(cls, label: str) -> Optional["Level"]:
         for kw, lvl in [
@@ -82,6 +99,7 @@ class LineMeta:
     font_size: float = 0.0
     bold: bool = False
     fontname: str = ""
+    is_table: bool = False
 
 
 # ── 法规元数据 ────────────────────────────────────────────

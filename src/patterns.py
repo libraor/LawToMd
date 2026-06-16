@@ -135,24 +135,27 @@ def detect_doc_type(text: str) -> str:
     Parameters
     ----------
     text : str
-        首页文本内容。
+        首页文本内容（可能为多行）。
 
     Returns
     -------
     str
         文档类型常量之一，与 models.DocType 枚举值一致。
     """
-    # 判决书：含法院名称 + 判决书类型
-    if RE_JUDGMENT_TITLE.search(text):
-        return "judgment"
+    # 逐行检测，因为多数正则使用 ^/$ 锚定
+    for line in text.splitlines():
+        # 判决书：含法院名称 + 判决书类型
+        if RE_JUDGMENT_TITLE.match(line):
+            return "judgment"
 
-    # 司法解释：含"法释〔YYYY〕XX号"
+    # 司法解释：含"法释〔YYYY〕XX号"（无需逐行，search 即可）
     if RE_JUDICIAL_INTERPRETATION.search(text):
         return "interpretation"
 
     # 法律法规：含编/章/节/条结构
-    if detect_level(text):
-        return "law"
+    for line in text.splitlines():
+        if detect_level(line):
+            return "law"
 
     return "unknown"
 
@@ -206,14 +209,14 @@ _CN_DIGIT_MAP = {
     "零": 0, "〇": 0,
     "一": 1, "二": 2, "三": 3, "四": 4,
     "五": 5, "六": 6, "七": 7, "八": 8,
-    "九": 9, "十": 10, "百": 100, "千": 1000,
+    "九": 9, "十": 10, "百": 100, "千": 1000, "万": 10000,
 }
 
 
 def cn_to_arabic(cn: str) -> int:
     """将中文数字转换为阿拉伯数字。
 
-    支持范围：零 至 九千九百九十九。
+    支持范围：零 至 九万九千九百九十九。
 
     Examples:
         >>> cn_to_arabic("一")
@@ -224,6 +227,8 @@ def cn_to_arabic(cn: str) -> int:
         123
         >>> cn_to_arabic("一千零一")
         1001
+        >>> cn_to_arabic("一万二千三百四十五")
+        12345
     """
     if not cn:
         return 0
@@ -232,6 +237,20 @@ def cn_to_arabic(cn: str) -> int:
     if cn.isdigit():
         return int(cn)
 
+    # 两阶段解析：先处理"万"级，再处理千以下
+    wan_idx = cn.find("万")
+    if wan_idx >= 0:
+        upper = cn[:wan_idx]
+        lower = cn[wan_idx + 1:]
+        upper_val = _parse_cn_below_wan(upper) if upper else 1
+        lower_val = _parse_cn_below_wan(lower) if lower else 0
+        return upper_val * 10000 + lower_val
+
+    return _parse_cn_below_wan(cn)
+
+
+def _parse_cn_below_wan(cn: str) -> int:
+    """解析万以下的中文数字（零 至 九千九百九十九）。"""
     result = 0
     current = 0
 

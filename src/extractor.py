@@ -18,24 +18,14 @@
 from __future__ import annotations
 
 import logging
-import re
-from collections import Counter
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Optional
 
-from src.models import DocType, LawMeta, LineMeta
-from src.patterns import (
-    RE_AUTHORITY,
-    RE_CASE_NUMBER,
-    RE_DATE,
-    RE_DOC_ID,
-    RE_HEADER_FOOTER,
-    RE_JUDGMENT_TITLE,
-    detect_doc_type,
-)
-
-_OcrMode = Literal["auto", "force", "off"]
-_OcrEngine = Literal["auto", "paddle", "lite"]
+from src.header_footer import filter_lines as _filter_lines
+from src.metadata import extract_meta_from_page as _extract_meta_from_page
+from src.models import LawMeta, LineMeta
+from src.normalizer import normalize_text
+from src.types import OcrEngineChoice, OcrMode
 
 logger = logging.getLogger(__name__)
 
@@ -43,98 +33,13 @@ logger = logging.getLogger(__name__)
 _PAGE_CHAR_LIMIT = 200_000
 _OCR_BATCH_SIZE = 5
 
-# ── 文本规范化规则 ────────────────────────────────────────
-
-# 全角→半角映射（仅实际需要转换的字符；中文标点保留全角）
-_FULLWIDTH_MAP = str.maketrans({
-    "　": " ",    # 全角空格→半角
-    "─": "-",     # 长破折号
-    "—": "-",     # 破折号
-})
-
-# OCR 常见误识别修正
-_OCR_FIXES: list[tuple[re.Pattern, str]] = [
-    (re.compile(r"l令"), "令"),
-    (re.compile(r"第0条"), "第十条"),   # 0 通常是"十"的误识别
-    (re.compile(r"第O条"), "第〇条"),   # O 通常是"〇"的误识别
-    (re.compile(r"第I条"), "第一条"),   # I 通常是"一"的误识别
-    (re.compile(r"第l条"), "第一条"),   # l 通常是"一"的误识别
-]
-
-# ── 替换配置加载 ──────────────────────────────────────────
-
-_replacements: list[tuple[re.Pattern, str]] | None = None
-_header_footer_sigs: list[re.Pattern] | None = None
-
-
-def _load_replace_config() -> None:
-    """加载 config/replace.yaml 中的替换规则（仅首次调用时加载）。"""
-    global _replacements, _header_footer_sigs
-
-    if _replacements is not None:
-        return
-
-    config_path = Path(__file__).resolve().parent.parent / "config" / "replace.yaml"
-    _replacements = []
-    _header_footer_sigs = []
-
-    if not config_path.exists():
-        return
-
-    try:
-        import yaml
-
-        with open(config_path, encoding="utf-8") as f:
-            cfg = yaml.safe_load(f)
-
-        for item in cfg.get("replacements", []):
-            if isinstance(item, (list, tuple)) and len(item) == 2:
-                _replacements.append((re.compile(re.escape(item[0])), item[1]))
-
-        for sig in cfg.get("header_footer_signatures", []):
-            _header_footer_sigs.append(re.compile(re.escape(sig)))
-
-        logger.debug("加载替换规则: %d 条, 页眉页脚签名: %d 条",
-                     len(_replacements), len(_header_footer_sigs))
-    except Exception as e:
-        logger.warning("加载 replace.yaml 失败: %s", e)
-
-
-def normalize_text(text: str) -> str:
-    """对提取的文本进行规范化处理。
-
-    处理内容：
-    - 全角空格→半角空格
-    - OCR 常见误识别修正
-    - 自定义替换规则（config/replace.yaml）
-
-    注意：法律文本中的中文标点（，。：；等）保留全角，不做转换。
-    """
-    # 全角字符规范化（空格、破折号等）
-    text = text.translate(_FULLWIDTH_MAP)
-
-    # OCR 误识别修正
-    for pat, repl in _OCR_FIXES:
-        text = pat.sub(repl, text)
-
-    # 自定义替换规则
-    _load_replace_config()
-    if _replacements:
-        for pat, repl in _replacements:
-            text = pat.sub(repl, text)
-
-    # 多余空白压缩
-    text = re.sub(r" {2,}", " ", text)
-
-    return text.strip()
-
 
 def _process_pdf_page(
     page,
     page_num: int,
     pdf_path: Path,
-    ocr_mode: _OcrMode,
-    ocr_engine: _OcrEngine = "auto",
+    ocr_mode: OcrMode,
+    ocr_engine: OcrEngineChoice = "auto",
     engine=None,
 ) -> tuple[list[LineMeta], str]:
     """处理单页 PDF，返回 (page_lines, ocr_fallback_text)。
@@ -181,6 +86,11 @@ def _process_pdf_page(
     for line in page_lines:
         line.text = normalize_text(line.text)
 
+    # 非 OCR 路径：提取表格行
+    if not use_ocr:
+        table_lines = _extract_table_lines(page, page_num)
+        page_lines.extend(table_lines)
+
     return page_lines, ocr_fallback_text
 
 
@@ -189,8 +99,8 @@ def extract_pdf(
     *,
     max_pages: Optional[int] = None,
     filter_header_footer: bool = True,
-    ocr_mode: _OcrMode = "off",
-    ocr_engine: _OcrEngine = "auto",
+    ocr_mode: OcrMode = "off",
+    ocr_engine: OcrEngineChoice = "auto",
 ) -> tuple[list[LineMeta], LawMeta]:
     """提取 PDF 全文，返回 (lines, meta)。
 
@@ -226,14 +136,16 @@ def extract_pdf(
     lines: list[LineMeta] = []
     meta = LawMeta(source_pdf=str(pdf_path))
 
-    with pdfplumber.open(pdf_path) as pdf:
-        total_pages = len(pdf.pages)
+    # ── 判断是否需要 OCR 分批 ──
+    # 仅 OCR 模式下需要提前获取总页数来决定分批策略
+    use_batching = False
+    total_pages = 0
 
-    if max_pages is not None:
-        total_pages = min(total_pages, max_pages)
-
-    # ── OCR 分批策略：>5 页时每 5 页分批，避免内存溢出 ──
-    use_batching = ocr_mode != "off" and total_pages > _OCR_BATCH_SIZE
+    if ocr_mode != "off":
+        with pdfplumber.open(pdf_path) as pdf:
+            raw_total_pages = len(pdf.pages)
+        total_pages = min(raw_total_pages, max_pages) if max_pages else raw_total_pages
+        use_batching = total_pages > _OCR_BATCH_SIZE
 
     if use_batching:
         import gc
@@ -301,11 +213,12 @@ def extract_pdf(
                 pass
             gc.collect()
     else:
-        # ── 非 OCR 或 ≤5 页：逐页处理，及时释放页面对象 ──
+        # ── 非 OCR 或 ≤5 页：单次打开，逐页处理 ──
         import gc
 
         with pdfplumber.open(pdf_path) as pdf:
-            total = min(len(pdf.pages), total_pages)
+            raw_pages = len(pdf.pages)
+            total = min(raw_pages, max_pages) if max_pages else raw_pages
 
             for page_idx in range(total):
                 page_num = page_idx + 1
@@ -455,6 +368,43 @@ def _extract_page_lines(page, page_num: int) -> list[LineMeta]:
     return page_lines
 
 
+def _extract_table_lines(page, page_num: int) -> list[LineMeta]:
+    """从 pdfplumber Page 中提取表格，转为 Markdown 表格行。"""
+    table_lines: list[LineMeta] = []
+    try:
+        tables = page.extract_tables()
+    except Exception:
+        return table_lines
+
+    for table in tables or []:
+        if not table or len(table) < 2:
+            continue
+        # 将表格转为 Markdown 格式
+        rows: list[str] = []
+        for i, row in enumerate(table):
+            cells = [str(cell or "").strip().replace("\n", " ") for cell in row]
+            rows.append("| " + " | ".join(cells) + " |")
+            # 首行后添加分隔行
+            if i == 0:
+                sep = "| " + " | ".join("---" for _ in cells) + " |"
+                rows.append(sep)
+
+        # 合并为单个 LineMeta，标记为表格
+        table_text = "\n".join(rows)
+        # 用表格的 bbox 估算坐标
+        table_lines.append(LineMeta(
+            text=table_text,
+            page_num=page_num,
+            x0=0,
+            y0=0,
+            x1=0,
+            y1=0,
+            is_table=True,
+        ))
+
+    return table_lines
+
+
 def _extract_font_info(chars: list[dict]) -> tuple[float, bool, str]:
     """从 chars 列表提取字体信息，返回 (font_size, bold, fontname)。"""
     font_sizes = [c.get("size", 0) for c in chars if c.get("size")]
@@ -489,113 +439,3 @@ def _make_line_from_font(
         bold=bold,
         fontname=fontname,
     )
-
-
-def _filter_lines(lines: list[LineMeta]) -> list[LineMeta]:
-    """过滤页眉页脚行。"""
-    _load_replace_config()
-
-    filtered: list[LineMeta] = []
-    for line in lines:
-        # 标准页眉页脚模式
-        if RE_HEADER_FOOTER.match(line.text):
-            continue
-        # 自定义页眉页脚签名
-        if _header_footer_sigs:
-            if any(sig.search(line.text) for sig in _header_footer_sigs):
-                continue
-        filtered.append(line)
-
-    filtered = _remove_cross_page_duplicates(filtered)
-
-    return filtered
-
-
-def _remove_cross_page_duplicates(lines: list[LineMeta]) -> list[LineMeta]:
-    """移除跨页重复内容（页眉页脚）。"""
-    text_page_counts: Counter = Counter()
-    for line in lines:
-        text_page_counts[(line.text, line.y0)] += 1
-
-    page_set = {line.page_num for line in lines}
-    num_pages = len(page_set)
-
-    duplicate_signatures: set[tuple[str, float]] = set()
-    for (text, y0), count in text_page_counts.items():
-        if count >= max(2, num_pages * 0.5) and len(text) < 80:
-            duplicate_signatures.add((text, y0))
-
-    if not duplicate_signatures:
-        return lines
-
-    return [line for line in lines if (line.text, line.y0) not in duplicate_signatures]
-
-
-def _extract_meta_from_page(
-    meta: LawMeta,
-    page_lines: list[LineMeta],
-    ocr_fallback_text: str = "",
-) -> None:
-    """从首页提取文档元数据，自动检测文档类型。"""
-    # 优先使用已提取的行文本，避免重复调用 page.extract_text()
-    text = "\n".join(line.text for line in page_lines)
-
-    # pdfplumber 无文字时使用 OCR 文本回退
-    if not text and ocr_fallback_text:
-        text = ocr_fallback_text
-        logger.debug("对元数据提取使用 OCR 回退文本")
-
-    # ── 文档类型检测 ──
-    meta.doc_type = DocType(detect_doc_type(text))
-
-    # ── 标题提取 ──
-    title_candidates = [line.text for line in page_lines if line.font_size >= 14 and len(line.text) > 4]
-    if title_candidates:
-        meta.name = title_candidates[0]
-
-    # ── 文号提取 ──
-    for m in RE_DOC_ID.finditer(text):
-        meta.doc_id = m.group(0).strip()
-        break
-
-    # ── 日期提取 ──
-    dates = RE_DATE.findall(text)
-    if dates:
-        meta.publish_date = dates[0].strip()
-        if len(dates) > 1:
-            meta.effective_date = dates[1].strip()
-
-    # ── 制定机关提取 ──
-    for m in RE_AUTHORITY.finditer(text):
-        meta.issuing_authority = m.group(0).strip()
-        break
-
-    # ── 判决书特有元数据 ──
-    if meta.doc_type == DocType.JUDGMENT:
-        _extract_judgment_meta(meta, text, page_lines)
-
-
-def _extract_judgment_meta(
-    meta: LawMeta,
-    text: str,
-    page_lines: list[LineMeta],
-) -> None:
-    """从判决书首页提取特有元数据。"""
-    # 案号
-    for m in RE_CASE_NUMBER.finditer(text):
-        meta.extra["case_number"] = m.group(0).strip()
-        break
-
-    # 法院名称和文书类型
-    for m in RE_JUDGMENT_TITLE.finditer(text):
-        court = m.group(2)
-        case_type = m.group(3)
-        doc_type_name = m.group(4)
-        meta.extra["court"] = court
-        meta.extra["judgment_type"] = f"{case_type}{doc_type_name}"
-        break
-
-    # 裁判日期（取最后一个日期）
-    dates = RE_DATE.findall(text)
-    if dates:
-        meta.extra["judgment_date"] = dates[-1].strip()

@@ -6,7 +6,10 @@
 
 from __future__ import annotations
 
+import re
+
 from src.models import DocType, HierarchyNode, LawMeta, Level
+from src.patterns import RE_LAW_REFERENCE
 
 
 def build_markdown(
@@ -51,15 +54,18 @@ def build_markdown(
 
 
 def _yaml_escape(value: str) -> str:
-    """对 YAML 值进行安全转义，用双引号包裹含特殊字符的值。"""
+    """对 YAML 值进行安全转义，使用 yaml.safe_dump 确保正确性。"""
     if not value:
         return '""'
-    # 需要转义的字符：冒号+空格、#、---、方括号、花括号、逗号、&、*、?、|、-、<、>、=、!、%、@、`、引号
-    if any(c in value for c in (':', '#', '[', ']', '{', '}', ',', '&', '*', '?', '|', '>', '=', '!', '%', '@', '`')) or value.startswith(('-', ' ')) or '\n' in value:
-        # 双引号内需要转义双引号和反斜杠
-        escaped = value.replace('\\', '\\\\').replace('"', '\\"')
+    import yaml
+    # safe_dump 会自动处理引号和特殊字符，strip 去掉末尾换行
+    result = yaml.safe_dump(value, allow_unicode=True, default_style=None).strip()
+    # safe_dump 对字符串默认不加引号，但含特殊字符时会自动加
+    # 如果结果以 | 或 > 开头（块标量），改为双引号风格
+    if result.startswith(("|", ">")):
+        escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
         return f'"{escaped}"'
-    return value
+    return result
 
 
 def _write_metadata_header(parts: list[str], meta: LawMeta) -> None:
@@ -138,12 +144,34 @@ def _render_node(
         parts.append(f"<!-- anchor: {anchor_id} -->")
         parts.append("")
 
-    # 法律引用标注（仅在含引用的节点添加）
+    # 法律引用标注：生成 Markdown 链接
     if node.law_references:
-        refs_str = ", ".join(node.law_references)
-        parts.append(f"<!-- references: {refs_str} -->")
+        ref_links = []
+        for ref in node.law_references:
+            link = _reference_to_link(ref)
+            ref_links.append(link)
+        parts.append("引用: " + ", ".join(ref_links))
         parts.append("")
 
     # 子节点（递归）
     for child in node.children:
         _render_node(parts, child, article_anchor=article_anchor)
+
+
+def _reference_to_link(ref: str) -> str:
+    """将法律引用文本转换为 Markdown 链接。
+
+    例如：'《民法典》第一百四十三条' → '[《民法典》第一百四十三条](#article-一百四十三)'
+
+    如果无法解析条号，则返回纯文本。
+    """
+    m = RE_LAW_REFERENCE.match(ref)
+    if m:
+        # m.group(0) 包含 "《XXX》第X条" 部分
+        full_match = m.group(0)
+        # 提取条号部分（"第X条"中的X）
+        article_part = re.search(r"第([一二三四五六七八九十百千零]+)条", full_match)
+        if article_part:
+            article_num = article_part.group(1)
+            return f"[{ref}](#article-{article_num})"
+    return ref

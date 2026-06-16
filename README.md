@@ -190,6 +190,8 @@ lawtomd convert <PDF_PATH> [选项]
 | `--no-anchor` | 生成 | 不添加 `<!-- anchor -->` 注释 |
 | `--ocr` | `off` | OCR 模式: `auto`=对无文字页面回退, `force`=强制所有页面, `off`=禁用 |
 | `--ocr-engine` | `auto` | OCR 引擎: `auto`=根据设备性能自动推荐, `paddle`=PaddleOCR高性能, `lite`=EasyOCR轻量版 |
+| `--format` | `markdown` | 输出格式: `markdown` 或 `json` |
+| `--validate` | 不校验 | 校验条号连续性，检测缺失条号 |
 
 **示例：**
 
@@ -205,6 +207,12 @@ lawtomd convert 民法典.pdf --max-pages 10
 
 # OCR 自动模式 + 指定轻量版后端
 lawtomd convert 扫描件.pdf --ocr auto --ocr-engine lite
+
+# 输出结构化 JSON
+lawtomd convert 民法典.pdf --format json
+
+# 校验条号连续性
+lawtomd convert 民法典.pdf --validate
 ```
 
 ### `batch` — 批量处理
@@ -221,6 +229,7 @@ lawtomd batch <PDF_DIR> [选项]
 | `--no-filter` | 过滤 | 不过滤页眉页脚 |
 | `--ocr` | `off` | OCR 模式: `auto`/`force`/`off` |
 | `--ocr-engine` | `auto` | OCR 引擎: `auto`/`paddle`/`lite` |
+| `--workers` | CPU 核心数 | 并行处理文件数 |
 
 **示例：**
 
@@ -233,6 +242,9 @@ lawtomd batch ./pdfs/ -o ./output/ --flatten
 
 # 批量 OCR，自动选择后端
 lawtomd batch ./pdfs/ -o ./output/ --ocr auto
+
+# 并行处理（8 个并发）
+lawtomd batch ./pdfs/ -o ./output/ --workers 8
 ```
 
 ### `profile` — 设备性能检测
@@ -341,14 +353,18 @@ PDF 文件 ─────→│    extractor.py     │── → LineMeta[]
 |------|------|----------|
 | 数据模型 | `models.py` | LineMeta / LawMeta / JudgmentMeta / HierarchyNode / DocType 定义 |
 | 模式库 | `patterns.py` | 30+ 预编译正则，覆盖编/章/节/条/当事人/裁判结果/法律引用/案号等 |
-| 文本提取 | `extractor.py` | 双策略提取、页眉页脚过滤、OCR 调度、文本规范化、文档类型检测 |
-| 结构识别 | `structure.py` | 多策略解析（法规/判决书）、层级状态机、子条款归并、引用提取 |
-| Markdown 组装 | `builder.py` | YAML 元数据头（文档类型感知）、层级标题映射、anchor + 引用注释 |
+| 文本提取 | `extractor.py` | 双策略提取、页眉页脚过滤、OCR 调度、表格提取、文档类型检测 |
+| 文本规范化 | `normalizer.py` | 全角空格统一、OCR 误识别修正、自定义替换规则 |
+| 页眉页脚过滤 | `header_footer.py` | 标准模式 + 自定义签名过滤 |
+| 元数据提取 | `metadata.py` | 法规标题、文号、日期、颁布机关等元数据提取 |
+| 结构识别 | `structure.py` | 多策略解析（法规/判决书）、层级状态机、款缩进检测、子条款归并、引用提取 |
+| Markdown 组装 | `builder.py` | YAML 元数据头（文档类型感知）、层级标题映射、anchor + 引用注释、JSON 输出 |
 | OCR 调度器 | `ocr.py` | 统一 OcrEngine 接口，自动选择/回退后端，PDF 页面→图像渲染 |
 | PaddleOCR 后端 | `ocr_paddle.py` | PaddleOCR 延迟初始化，GPU 自动检测，坐标转换 |
 | EasyOCR 后端 | `ocr_lite.py` | EasyOCR (PyTorch) 轻量后端，低内存占用，GPU 可选加速 |
 | 设备检测 | `profiler.py` | CPU/内存/GPU 检测，性能分级，OCR 后端推荐 |
-| CLI 入口 | `main.py` | click 命令组（convert + batch + profile），均支持 --ocr/--ocr-engine 选项 |
+| 类型定义 | `types.py` | OcrBackendProtocol、OcrMode、OcrEngineChoice 等公共类型 |
+| CLI 入口 | `main.py` | click 命令组（convert + batch + profile），支持 --format/--validate/--workers 选项 |
 
 ---
 
@@ -413,13 +429,17 @@ LawToMd/
 │   ├── main.py           # CLI 入口（convert + batch + profile）
 │   ├── models.py         # 数据类
 │   ├── patterns.py       # 正则模式库
-│   ├── extractor.py      # PDF 文本提取 + OCR 调度
-│   ├── structure.py      # 结构识别引擎
-│   ├── builder.py        # Markdown 组装
+│   ├── extractor.py      # PDF 文本提取 + OCR 调度 + 表格提取
+│   ├── normalizer.py     # 文本规范化（全角空格/OCR 修正/替换规则）
+│   ├── header_footer.py  # 页眉页脚过滤
+│   ├── metadata.py       # 元数据提取（标题/文号/日期/机关）
+│   ├── structure.py      # 结构识别引擎（款缩进检测/引用提取）
+│   ├── builder.py        # Markdown/JSON 组装
 │   ├── ocr.py            # OCR 引擎调度器（统一接口）
 │   ├── ocr_paddle.py     # PaddleOCR 高性能后端
-│   ├── ocr_lite.py       # RapidOCR 轻量版后端
-│   └── profiler.py       # 设备性能检测 + OCR 方案推荐
+│   ├── ocr_lite.py       # EasyOCR 轻量版后端
+│   ├── profiler.py       # 设备性能检测 + OCR 方案推荐
+│   └── types.py          # 公共类型定义（OcrBackendProtocol 等）
 ├── config/
 │   └── replace.yaml      # 常用词替换规则
 ├── tests/
@@ -431,7 +451,8 @@ LawToMd/
 │   └── test_e2e.py       # 端到端测试
 ├── pyproject.toml
 ├── requirements.txt
-└── README.md
+├── README.md
+└── CHANGELOG.md
 ```
 
 ---

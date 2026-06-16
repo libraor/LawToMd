@@ -17,14 +17,11 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from threading import Lock
-from typing import TYPE_CHECKING, Optional
+from typing import Optional
 
 from src.models import LineMeta
 from src.profiler import DeviceProfile, detect_device_profile, recommend_ocr_backend
-
-if TYPE_CHECKING:
-    from src.ocr_paddle import PaddleOcrBackend
-    from src.ocr_lite import LiteOcrBackend
+from src.types import OcrBackendProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +85,7 @@ class OcrEngine:
 
     def __init__(self, backend: str = "auto") -> None:
         self._backend_name: str = ""
-        self._backend: PaddleOcrBackend | LiteOcrBackend | None = None
+        self._backend: OcrBackendProtocol | None = None
         self._profile: Optional[DeviceProfile] = None
 
         # 解析后端选择
@@ -181,7 +178,7 @@ class OcrEngine:
             "  pip install 'lawtomd[ocr-lite]'  # RapidOCR 轻量版"
         )
 
-    def _create_backend(self, name: str):
+    def _create_backend(self, name: str) -> OcrBackendProtocol:
         """创建后端实例。"""
         if name == "paddle":
             from src.ocr_paddle import PaddleOcrBackend

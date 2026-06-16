@@ -15,9 +15,11 @@
 from __future__ import annotations
 
 import logging
+import re
+from functools import lru_cache
 from typing import Optional
 
-from src.models import DocType, HierarchyNode, Level, LineMeta
+from src.models import DocType, HierarchyNode, LawMeta, Level, LineMeta
 from src.patterns import (
     RE_JUDGES,
     RE_LAW_REFERENCE,
@@ -34,6 +36,7 @@ logger = logging.getLogger(__name__)
 def parse_structure(
     lines: list[LineMeta],
     doc_type: DocType = DocType.UNKNOWN,
+    meta: Optional[LawMeta] = None,
 ) -> list[HierarchyNode]:
     """将排好序的 LineMeta 列表解析为 HierarchyNode 树。
 
@@ -43,6 +46,8 @@ def parse_structure(
         按页码+坐标排序的文本行。
     doc_type : DocType
         文档类型，影响解析策略。
+    meta : LawMeta, optional
+        法规元数据，用于保存前导内容（preamble）。
 
     Returns
     -------
@@ -53,10 +58,7 @@ def parse_structure(
         return []
 
     # 根据文档类型选择解析策略
-    if doc_type == DocType.JUDGMENT:
-        raw_nodes = _lines_to_judgment_nodes(lines)
-    else:
-        raw_nodes = _lines_to_nodes(lines)
+    raw_nodes = _lines_to_nodes(lines, doc_type=doc_type, meta=meta)
 
     # 构建层级树
     tree = _build_tree(raw_nodes)
@@ -67,21 +69,49 @@ def parse_structure(
     return tree
 
 
-# ── Step 1a: 法规行 → 节点 ────────────────────────────────
+# ── Step 1: 行 → 节点（统一策略） ──────────────────────────
 
 # 只有编/章/节/条创建独立的结构节点
 _TITLE_LEVELS = frozenset({"part", "chapter", "section", "article"})
 _SUB_LEVELS = frozenset({"sub_clause", "item"})
 
+# 款（CLAUSE）缩进检测阈值：x0 差值超过此值视为缩进（即新款）
+_CLAUSE_INDENT_THRESHOLD = 10.0  # pt
 
-def _lines_to_nodes(lines: list[LineMeta]) -> list[HierarchyNode]:
+# 判决书专用正则 → Level 映射（lru_cache 保证线程安全且只初始化一次）
+
+
+@lru_cache(maxsize=1)
+def _get_judgment_patterns() -> tuple[list[tuple[re.Pattern, Level]], ...]:
+    """获取判决书正则映射（缓存，线程安全）。"""
+    return ([
+        (RE_PARTY, Level.PARTY),
+        (RE_PROCEDURE_HEADER, Level.PROCEDURE),
+        (RE_RULING_HEADER, Level.RULING),
+        (RE_JUDGES, Level.JUDGES),
+    ],)
+
+
+def _lines_to_nodes(
+    lines: list[LineMeta],
+    doc_type: DocType = DocType.UNKNOWN,
+    meta: Optional[LawMeta] = None,
+) -> list[HierarchyNode]:
     """将 LineMeta 行列表转换为扁平 HierarchyNode 列表。
 
-    策略：逐行扫描，遇到新的"标题行"（编/章/节/条）就创建一个新节点，
-    非标题行追加到当前节点的 text 中。
+    统一处理法规和判决书，通过 doc_type 选择标题行判定策略：
+    - 法规：编/章/节/条/款/项/目
+    - 判决书：当事人/诉讼记录/裁判结果/审判人员 + 法条结构
     """
+    is_judgment = doc_type == DocType.JUDGMENT
+    judgment_patterns = _get_judgment_patterns()[0] if is_judgment else []
+
     nodes: list[HierarchyNode] = []
     current: Optional[HierarchyNode] = None
+    # 记录当前条标题的 x0，用于款（CLAUSE）缩进检测
+    article_x0: Optional[float] = None
+    # 收集前导内容（第一个结构标题之前的文本）
+    preamble_parts: list[str] = []
 
     for line in lines:
         text = line.text.strip()
@@ -90,11 +120,37 @@ def _lines_to_nodes(lines: list[LineMeta]) -> list[HierarchyNode]:
 
         level_key = detect_level(text)
 
+        # 判决书专用标题判定（优先于法条结构）
+        if is_judgment:
+            matched_judgment = False
+            for pat, lvl in judgment_patterns:
+                if pat.match(text):
+                    if current:
+                        _trim_text(current)
+                    current = HierarchyNode(
+                        level=lvl,
+                        title=text,
+                        text="",
+                        page_num=line.page_num,
+                    )
+                    nodes.append(current)
+                    article_x0 = None
+                    matched_judgment = True
+                    break
+            if matched_judgment:
+                continue
+
+        # 法条结构标题判定
         if level_key in _TITLE_LEVELS:
             if current:
                 _trim_text(current)
             current = _make_node(level_key, text, line)
             nodes.append(current)
+            # 记录条标题的 x0，用于后续款缩进检测
+            if level_key == "article":
+                article_x0 = line.x0
+            else:
+                article_x0 = None
         elif level_key in _SUB_LEVELS:
             if current is None:
                 current = _make_orphan_node(line)
@@ -108,110 +164,63 @@ def _lines_to_nodes(lines: list[LineMeta]) -> list[HierarchyNode]:
                 hierarchy_path=current.hierarchy_path + [text],
             )
             current.children.append(sub_node)
+            article_x0 = None
         elif current is None:
-            # 前导内容（法规标题、颁布信息等），跳过直到遇到第一个结构标题
+            # 前导内容（法规标题、颁布信息等），收集到 preamble
+            preamble_parts.append(text)
             continue
+        elif _is_clause_indent(line, current, article_x0):
+            # 款（CLAUSE）：条下缩进的段落
+            clause_node = HierarchyNode(
+                level=Level.CLAUSE,
+                title="",
+                text=text,
+                page_num=line.page_num,
+                parent=current,
+                hierarchy_path=current.hierarchy_path + ["款"],
+            )
+            current.children.append(clause_node)
+        elif line.is_table:
+            # 表格行直接追加到当前节点（保持 Markdown 表格格式）
+            _append_text(current, text, line)
         else:
             _append_text(current, text, line)
 
     if current:
         _trim_text(current)
 
+    # 将前导内容保存到 meta
+    if preamble_parts and meta is not None:
+        meta.extra["preamble"] = "\n".join(preamble_parts)
+
     return nodes
 
 
-# ── Step 1b: 判决书行 → 节点 ──────────────────────────────
+def _is_clause_indent(
+    line: LineMeta,
+    current: HierarchyNode,
+    article_x0: Optional[float],
+) -> bool:
+    """判断一行是否为款（CLAUSE）——条下缩进的段落。
 
-def _lines_to_judgment_nodes(lines: list[LineMeta]) -> list[HierarchyNode]:
-    """将判决书的 LineMeta 行列表转换为扁平 HierarchyNode 列表。
-
-    判决书结构：
-    1. 标题（法院名称 + 文书类型）
-    2. 当事人信息（原告/被告/第三人）
-    3. 诉讼记录（诉称/辩称/审理查明）
-    4. 裁判结果（判决如下/裁定如下）
-    5. 审判人员署名
+    条件：
+    1. 当前节点是 ARTICLE 级别
+    2. 已有条标题的 x0 基准
+    3. 当前行 x0 明显大于条标题 x0（缩进超过阈值）
+    4. 当前条节点已有正文（即不是条标题后的第一行，第一行通常紧跟条标题）
     """
-    nodes: list[HierarchyNode] = []
-    current: Optional[HierarchyNode] = None
-
-    for line in lines:
-        text = line.text.strip()
-        if not text:
-            continue
-
-        level_key = detect_level(text)
-
-        # 当事人信息
-        if RE_PARTY.match(text):
-            if current:
-                _trim_text(current)
-            current = HierarchyNode(
-                level=Level.PARTY,
-                title=text,
-                text="",
-                page_num=line.page_num,
-            )
-            nodes.append(current)
-        # 诉讼记录段落
-        elif RE_PROCEDURE_HEADER.match(text):
-            if current:
-                _trim_text(current)
-            current = HierarchyNode(
-                level=Level.PROCEDURE,
-                title=text,
-                text="",
-                page_num=line.page_num,
-            )
-            nodes.append(current)
-        # 裁判结果段落
-        elif RE_RULING_HEADER.match(text):
-            if current:
-                _trim_text(current)
-            current = HierarchyNode(
-                level=Level.RULING,
-                title=text,
-                text="",
-                page_num=line.page_num,
-            )
-            nodes.append(current)
-        # 审判人员署名
-        elif RE_JUDGES.match(text):
-            if current:
-                _trim_text(current)
-            current = HierarchyNode(
-                level=Level.JUDGES,
-                title=text,
-                text="",
-                page_num=line.page_num,
-            )
-            nodes.append(current)
-        # 法条结构（判决书中也可能引用法条）
-        elif level_key in _TITLE_LEVELS:
-            if current:
-                _trim_text(current)
-            current = _make_node(level_key, text, line)
-            nodes.append(current)
-        elif level_key in _SUB_LEVELS:
-            if current is None:
-                current = _make_orphan_node(line)
-                nodes.append(current)
-            sub_node = HierarchyNode(
-                level=Level.SUB_CLAUSE if level_key == "sub_clause" else Level.ITEM,
-                title=text,
-                text=text,
-                page_num=line.page_num,
-                parent=current,
-                hierarchy_path=current.hierarchy_path + [text],
-            )
-            current.children.append(sub_node)
-        elif current is not None:
-            _append_text(current, text, line)
-
-    if current:
-        _trim_text(current)
-
-    return nodes
+    if current.level != Level.ARTICLE:
+        return False
+    if article_x0 is None:
+        return False
+    indent = line.x0 - article_x0
+    if indent < _CLAUSE_INDENT_THRESHOLD:
+        return False
+    # 条下第一行正文通常紧跟条标题（缩进也较大），不算新款
+    # 只有当条已有正文内容时，后续缩进行才算新款
+    if not current.text:
+        return False
+    return True
 
 
 # ── 节点构建辅助 ──────────────────────────────────────────
@@ -241,7 +250,7 @@ def _make_orphan_node(line: LineMeta) -> HierarchyNode:
     )
 
 
-def _append_text(node: HierarchyNode, text: str, line: LineMeta) -> None:
+def _append_text(node: HierarchyNode, text: str, _line: LineMeta | None = None) -> None:
     """向节点追加正文，处理换行。"""
     if node.text:
         node.text += "\n" + text
@@ -257,25 +266,34 @@ def _trim_text(node: HierarchyNode) -> None:
 
 # ── Step 2: 扁平节点 → 树 ──────────────────────────────
 
+def _is_duplicate_node(existing: HierarchyNode, incoming: HierarchyNode) -> bool:
+    """判断 incoming 是否为 existing 的目录重复（同名同层级且前者无内容）。"""
+    return (
+        existing.title == incoming.title
+        and existing.level == incoming.level
+        and not _has_content(existing)
+    )
+
+
 def _build_tree(nodes: list[HierarchyNode]) -> list[HierarchyNode]:
     root: list[HierarchyNode] = []
     stack: list[HierarchyNode] = []
 
     for node in nodes:
-        while stack and _level_order(stack[-1].level) >= _level_order(node.level):
+        while stack and stack[-1].level.sort_order() >= node.level.sort_order():
             stack.pop()
 
         if stack:
             parent = stack[-1]
             siblings = parent.children
-            if siblings and siblings[-1].title == node.title and not _has_content(siblings[-1]):
+            if siblings and _is_duplicate_node(siblings[-1], node):
                 siblings[-1] = node
             else:
                 siblings.append(node)
             node.parent = parent
             node.hierarchy_path = parent.hierarchy_path + [node.title]
         else:
-            if root and root[-1].title == node.title and not _has_content(root[-1]):
+            if root and _is_duplicate_node(root[-1], node):
                 root[-1] = node
             else:
                 root.append(node)
@@ -294,27 +312,6 @@ def _has_content(node: HierarchyNode) -> bool:
         if child.text or child.children:
             return True
     return False
-
-
-LEVEL_ORDER = {
-    Level.PART: 1,
-    Level.CHAPTER: 2,
-    Level.SECTION: 3,
-    Level.ARTICLE: 4,
-    Level.CLAUSE: 5,
-    Level.SUB_CLAUSE: 6,
-    Level.ITEM: 7,
-    # 判决书层级（与法规同级并列）
-    Level.PARTY: 3,
-    Level.PROCEDURE: 3,
-    Level.RULING: 3,
-    Level.JUDGES: 4,
-}
-
-
-def _level_order(level: Level) -> int:
-    """返回层级的排序值（越小越上层）。"""
-    return LEVEL_ORDER.get(level, 99)
 
 
 # ── 法律引用标注提取 ──────────────────────────────────────
