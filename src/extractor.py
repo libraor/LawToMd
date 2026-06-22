@@ -25,7 +25,7 @@ from src.header_footer import filter_lines as _filter_lines
 from src.metadata import extract_meta_from_page as _extract_meta_from_page
 from src.models import LawMeta, LineMeta
 from src.normalizer import normalize_text
-from src.types import OcrEngineChoice, OcrMode
+from src.types import OcrMode
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +39,6 @@ def _process_pdf_page(
     page_num: int,
     pdf_path: Path,
     ocr_mode: OcrMode,
-    ocr_engine: OcrEngineChoice = "auto",
     engine=None,
 ) -> tuple[list[LineMeta], str]:
     """处理单页 PDF，返回 (page_lines, ocr_fallback_text)。
@@ -63,7 +62,7 @@ def _process_pdf_page(
             if engine is None:
                 from src.ocr import OcrEngine
 
-                engine = OcrEngine.get_instance(backend=ocr_engine)
+                engine = OcrEngine.get_instance()
 
             image, effective_dpi = pdf_page_to_image(pdf_path, page_num - 1, dpi=300)
             page_lines = engine.ocr_page(image, page_num=page_num, dpi=effective_dpi)
@@ -100,7 +99,6 @@ def extract_pdf(
     max_pages: Optional[int] = None,
     filter_header_footer: bool = True,
     ocr_mode: OcrMode = "off",
-    ocr_engine: OcrEngineChoice = "auto",
 ) -> tuple[list[LineMeta], LawMeta]:
     """提取 PDF 全文，返回 (lines, meta)。
 
@@ -117,11 +115,6 @@ def extract_pdf(
         - "auto"  → 仅对 pdfplumber 返回极少字符的页面使用 OCR
         - "force" → 所有页面强制 OCR
         - "off"   → 不使用 OCR（向后兼容）
-    ocr_engine : "auto" | "paddle" | "lite"
-        OCR 引擎选择（默认 "auto"）：
-        - "auto"   → 根据设备性能自动推荐
-        - "paddle" → PaddleOCR 高性能后端
-        - "lite"   → RapidOCR 轻量版后端
 
     Returns
     -------
@@ -166,7 +159,7 @@ def extract_pdf(
                 from src.ocr import OcrEngine
 
                 # 前一批已 reset，这里会重新初始化
-                engine = OcrEngine.get_instance(backend=ocr_engine)
+                engine = OcrEngine.get_instance()
                 ocr_available = True
             except ImportError:
                 logger.warning("OCR 依赖未安装，所有页面使用 pdfplumber 提取")
@@ -186,7 +179,7 @@ def extract_pdf(
 
                     effective_ocr_mode = ocr_mode if ocr_available else "off"
                     page_lines, ocr_fallback_text = _process_pdf_page(
-                        page, page_num, pdf_path, effective_ocr_mode, ocr_engine=ocr_engine, engine=engine,
+                        page, page_num, pdf_path, effective_ocr_mode, engine=engine,
                     )
 
                     for line in page_lines:
@@ -233,7 +226,7 @@ def extract_pdf(
                     continue
 
                 page_lines, ocr_fallback_text = _process_pdf_page(
-                    page, page_num, pdf_path, ocr_mode, ocr_engine=ocr_engine,
+                    page, page_num, pdf_path, ocr_mode,
                 )
 
                 for line in page_lines:

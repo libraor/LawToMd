@@ -21,6 +21,7 @@ from typing import Optional
 
 from src.models import DocType, HierarchyNode, LawMeta, Level, LineMeta
 from src.patterns import (
+    RE_FOOTNOTE_MARK,
     RE_JUDGES,
     RE_LAW_REFERENCE,
     RE_PARTY,
@@ -72,7 +73,7 @@ def parse_structure(
 # ── Step 1: 行 → 节点（统一策略） ──────────────────────────
 
 # 只有编/章/节/条创建独立的结构节点
-_TITLE_LEVELS = frozenset({"part", "chapter", "section", "article"})
+_TITLE_LEVELS = frozenset({"part", "chapter", "section", "article", "preface", "appendix", "subsection"})
 _SUB_LEVELS = frozenset({"sub_clause", "item"})
 
 # 款（CLAUSE）缩进检测阈值：x0 差值超过此值视为缩进（即新款）
@@ -104,7 +105,17 @@ def _lines_to_nodes(
     - 判决书：当事人/诉讼记录/裁判结果/审判人员 + 法条结构
     """
     is_judgment = doc_type == DocType.JUDGMENT
+    is_book = doc_type == DocType.BOOK
     judgment_patterns = _get_judgment_patterns()[0] if is_judgment else []
+
+    # 书籍文档：计算正文字号，用于标题检测
+    # 使用第 25 百分位数作为基准，避免被大量小字（版权页等）拉低
+    body_font_size = 0.0
+    if is_book and lines:
+        font_sizes = sorted(l.font_size for l in lines if l.font_size > 0)
+        if font_sizes:
+            p25_idx = max(0, len(font_sizes) // 4)
+            body_font_size = font_sizes[p25_idx]
 
     nodes: list[HierarchyNode] = []
     current: Optional[HierarchyNode] = None
@@ -166,9 +177,31 @@ def _lines_to_nodes(
             current.children.append(sub_node)
             article_x0 = None
         elif current is None:
-            # 前导内容（法规标题、颁布信息等），收集到 preamble
-            preamble_parts.append(text)
-            continue
+            # 书籍文档：基于字号判断标题层级
+            if is_book and body_font_size > 0 and line.font_size > body_font_size * 1.5:
+                if current:
+                    _trim_text(current)
+                # 字号越大，层级越高
+                ratio = line.font_size / body_font_size
+                if ratio > 3.0:
+                    level = Level.PART
+                elif ratio > 2.0:
+                    level = Level.CHAPTER
+                else:
+                    level = Level.SECTION
+                current = HierarchyNode(
+                    level=level,
+                    title=text,
+                    text="",
+                    page_num=line.page_num,
+                    hierarchy_path=[text],
+                )
+                nodes.append(current)
+                article_x0 = None
+            else:
+                # 前导内容（法规标题、颁布信息等），收集到 preamble
+                preamble_parts.append(text)
+                continue
         elif _is_clause_indent(line, current, article_x0):
             # 款（CLAUSE）：条下缩进的段落
             clause_node = HierarchyNode(
@@ -183,6 +216,36 @@ def _lines_to_nodes(
         elif line.is_table:
             # 表格行直接追加到当前节点（保持 Markdown 表格格式）
             _append_text(current, text, line)
+        elif is_book and _is_footnote(line, current):
+            # 脚注：小字号 + 脚注标记开头的行
+            fn_node = HierarchyNode(
+                level=Level.FOOTNOTE,
+                title="",
+                text=text,
+                page_num=line.page_num,
+                parent=current,
+                hierarchy_path=current.hierarchy_path + ["脚注"],
+            )
+            current.children.append(fn_node)
+        elif is_book and body_font_size > 0 and line.font_size > body_font_size * 1.5:
+            # 书籍文档：遇到大字号行，创建新标题节点
+            _trim_text(current)
+            ratio = line.font_size / body_font_size
+            if ratio > 3.0:
+                level = Level.PART
+            elif ratio > 2.0:
+                level = Level.CHAPTER
+            else:
+                level = Level.SECTION
+            current = HierarchyNode(
+                level=level,
+                title=text,
+                text="",
+                page_num=line.page_num,
+                hierarchy_path=[text],
+            )
+            nodes.append(current)
+            article_x0 = None
         else:
             _append_text(current, text, line)
 
@@ -221,6 +284,34 @@ def _is_clause_indent(
     if not current.text:
         return False
     return True
+
+
+# 脚注字号阈值：字号低于正文字号的 80% 视为脚注
+_FOOTNOTE_SIZE_RATIO = 0.80
+
+
+def _is_footnote(
+    line: LineMeta,
+    current: HierarchyNode,
+) -> bool:
+    """判断一行是否为脚注。
+
+    条件：
+    1. 行以脚注标记开头（①②③ 或 [1][2]）
+    2. 或者行字号明显小于正文（低于正文字号的 80%）
+    """
+    if RE_FOOTNOTE_MARK.match(line.text.strip()):
+        return True
+    # 字号判断：如果当前行字号明显小于当前节点上下文
+    if line.font_size > 0 and current.level in (
+        Level.CHAPTER, Level.SECTION, Level.ARTICLE,
+        Level.SUBSECTION, Level.PREFACE, Level.APPENDIX,
+    ):
+        # 用当前行的字号与页面常见正文字号比较
+        # 脚注通常 < 9pt，正文通常 10-12pt
+        if line.font_size < 9:
+            return True
+    return False
 
 
 # ── 节点构建辅助 ──────────────────────────────────────────

@@ -32,6 +32,12 @@ class Level(Enum):
     RULING = "ruling"            # 裁判结果
     JUDGES = "judges"            # 审判人员署名
 
+    # 法律书籍专用层级
+    PREFACE = "preface"          # 前言/序言/导言
+    SUBSECTION = "subsection"    # 小节（节下更细的分层）
+    APPENDIX = "appendix"        # 附录/后记/跋
+    FOOTNOTE = "footnote"        # 脚注
+
     def heading_level(self) -> int:
         """映射到 Markdown 标题层级。"""
         return {
@@ -43,6 +49,9 @@ class Level(Enum):
             Level.PROCEDURE: 3,
             Level.RULING: 3,
             Level.JUDGES: 3,
+            Level.PREFACE: 2,
+            Level.SUBSECTION: 4,
+            Level.APPENDIX: 2,
         }.get(self, 0)  # 0 = 正文段落，不做标题
 
     def sort_order(self) -> int:
@@ -60,6 +69,11 @@ class Level(Enum):
             Level.PROCEDURE: 3,
             Level.RULING: 3,
             Level.JUDGES: 4,
+            # 书籍层级
+            Level.PREFACE: 2,
+            Level.SUBSECTION: 4,
+            Level.APPENDIX: 2,
+            Level.FOOTNOTE: 8,
         }.get(self, 99)
 
     @classmethod
@@ -82,6 +96,7 @@ class DocType(Enum):
     LAW = "law"                          # 法律法规
     JUDGMENT = "judgment"                # 判决书/裁定书
     INTERPRETATION = "interpretation"    # 司法解释
+    BOOK = "book"                        # 法律书籍/教材/专著
     UNKNOWN = "unknown"
 
 

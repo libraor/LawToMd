@@ -99,6 +99,17 @@ def _write_metadata_header(parts: list[str], meta: LawMeta) -> None:
         if "judgment_date" in meta.extra:
             parts.append(f"judgment_date: {_yaml_escape(meta.extra['judgment_date'])}")
 
+    # 书籍特有元数据
+    if meta.doc_type == DocType.BOOK:
+        if "author" in meta.extra:
+            parts.append(f"author: {_yaml_escape(meta.extra['author'])}")
+        if "publisher" in meta.extra:
+            parts.append(f"publisher: {_yaml_escape(meta.extra['publisher'])}")
+        if "isbn" in meta.extra:
+            parts.append(f"isbn: {_yaml_escape(meta.extra['isbn'])}")
+        if "publish_date" in meta.extra:
+            parts.append(f"book_date: {_yaml_escape(meta.extra['publish_date'])}")
+
     parts.append("---")
     parts.append("")
 
@@ -135,8 +146,13 @@ def _render_node(
 
     # 正文内容
     if node.text:
-        parts.append(node.text)
-        parts.append("")
+        # 脚注用小字标记
+        if node.level == Level.FOOTNOTE:
+            parts.append(f"<small>{node.text}</small>")
+            parts.append("")
+        else:
+            parts.append(node.text)
+            parts.append("")
 
     # anchor 注释（仅在 ARTICLE 级别添加）
     if article_anchor and node.level == Level.ARTICLE and node.number:
@@ -170,7 +186,7 @@ def _reference_to_link(ref: str) -> str:
         # m.group(0) 包含 "《XXX》第X条" 部分
         full_match = m.group(0)
         # 提取条号部分（"第X条"中的X）
-        article_part = re.search(r"第([一二三四五六七八九十百千零]+)条", full_match)
+        article_part = re.search(r"第([一二三四五六七八九十百千零0-9]+)条", full_match)
         if article_part:
             article_num = article_part.group(1)
             return f"[{ref}](#article-{article_num})"

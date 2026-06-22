@@ -1,14 +1,11 @@
 """OCR 引擎调度器。
 
-根据设备性能自动选择 OCR 后端（PaddleOCR 高性能 或 RapidOCR 轻量版），
-也支持用户手动指定。提供统一的 OcrEngine 接口，对上层调用者透明。
+统一使用 PaddleOCR 作为唯一 OCR 后端。
 
-公共 API 保持向后兼容：
+公共 API：
     from src.ocr import OcrEngine, pdf_page_to_image, page_has_text, is_available
 
-    engine = OcrEngine.get_instance()           # 自动选择后端
-    engine = OcrEngine.get_instance(backend="paddle")  # 强制 PaddleOCR
-    engine = OcrEngine.get_instance(backend="lite")    # 强制轻量版
+    engine = OcrEngine.get_instance()
     lines = engine.ocr_page(image, page_num=1, dpi=300)
 """
 
@@ -20,8 +17,7 @@ from threading import Lock
 from typing import Optional
 
 from src.models import LineMeta
-from src.profiler import DeviceProfile, detect_device_profile, recommend_ocr_backend
-from src.types import OcrBackendProtocol
+from src.profiler import DeviceProfile, detect_device_profile
 
 logger = logging.getLogger(__name__)
 
@@ -38,25 +34,10 @@ _MAX_IMAGE_PIXELS = 4000
 
 
 def is_available() -> bool:
-    """检查是否有任何 OCR 后端可用（不触发初始化）。"""
+    """检查 PaddleOCR 是否可用（不触发初始化）。"""
     from src.ocr_paddle import is_paddle_available
-    from src.ocr_lite import is_lite_available
 
-    return is_paddle_available() or is_lite_available()
-
-
-def is_paddle_available() -> bool:
-    """检查 PaddleOCR 后端是否可用。"""
-    from src.ocr_paddle import is_paddle_available as _check
-
-    return _check()
-
-
-def is_lite_available() -> bool:
-    """检查 RapidOCR 轻量版后端是否可用。"""
-    from src.ocr_lite import is_lite_available as _check
-
-    return _check()
+    return is_paddle_available()
 
 
 def page_has_text(page) -> bool:
@@ -65,69 +46,39 @@ def page_has_text(page) -> bool:
     return len(chars) >= _MIN_CHARS_FOR_TEXT
 
 
-# ── OcrEngine 调度器 ──────────────────────────────────────
+# ── OcrEngine ─────────────────────────────────────────────
 
 
 class OcrEngine:
-    """OCR 引擎调度器，根据设备性能自动选择后端。
+    """PaddleOCR 引擎单例封装。
 
-    支持三种后端选择模式：
-    - "auto"   → 根据设备性能自动推荐（默认）
-    - "paddle" → 强制使用 PaddleOCR 高性能后端
-    - "lite"   → 强制使用 RapidOCR 轻量版后端
-
-    当 backend="auto" 时，会检测设备性能并选择推荐的后端。
-    如果推荐的后端不可用，会自动回退到另一个可用后端。
+    延迟初始化，首次调用 get_instance() 时加载模型。
+    自动检测 GPU 可用性，有 GPU 时启用 GPU 加速。
     """
 
     _instance: Optional["OcrEngine"] = None
-    _backend_choice: str = "auto"
 
-    def __init__(self, backend: str = "auto") -> None:
-        self._backend_name: str = ""
-        self._backend: OcrBackendProtocol | None = None
+    def __init__(self) -> None:
+        self._backend = None
         self._profile: Optional[DeviceProfile] = None
 
-        # 解析后端选择
-        if backend == "auto":
-            self._profile = detect_device_profile()
-            recommended = recommend_ocr_backend(self._profile)
-            self._backend_name = self._resolve_backend(recommended)
-        else:
-            self._backend_name = self._resolve_backend(backend)
+        from src.ocr_paddle import PaddleOcrBackend
 
-        # 创建后端实例
-        self._backend = self._create_backend(self._backend_name)
+        self._profile = detect_device_profile()
+        self._backend = PaddleOcrBackend()
 
         logger.info(
-            "OCR 后端选择: %s%s",
-            self._backend_name,
-            f" (自动推荐: 设备性能={self._profile.tier.value})" if self._profile else "",
+            "OCR 引擎初始化: PaddleOCR (设备=%s)",
+            self._profile.summary().split("\n")[1].strip() if self._profile else "unknown",
         )
 
     @classmethod
-    def get_instance(cls, backend: str = "auto") -> "OcrEngine":
-        """获取或创建 OcrEngine 单例（线程安全）。
-
-        Parameters
-        ----------
-        backend : str
-            后端选择: "auto" | "paddle" | "lite"
-        """
-        # 记住用户的选择，reset 后仍使用同一后端
-        if backend != "auto":
-            cls._backend_choice = backend
-
-        if cls._instance is not None and backend != "auto" and backend != cls._instance._backend_name:
-            # backend 参数变化，需要重建实例
-            logger.info("OCR 后端切换: %s → %s，重建实例", cls._instance._backend_name, backend)
-            cls.reset()
-
+    def get_instance(cls) -> "OcrEngine":
+        """获取或创建 OcrEngine 单例（线程安全）。"""
         if cls._instance is None:
             with _engine_lock:
                 if cls._instance is None:
-                    effective_backend = cls._backend_choice
-                    cls._instance = cls(backend=effective_backend)
+                    cls._instance = cls()
         return cls._instance
 
     @classmethod
@@ -138,59 +89,6 @@ class OcrEngine:
                 cls._instance._backend.release()
             cls._instance = None
 
-    def _resolve_backend(self, preferred: str) -> str:
-        """解析后端选择，如果首选不可用则回退。
-
-        Parameters
-        ----------
-        preferred : str
-            首选后端: "paddle" 或 "lite"
-
-        Returns
-        -------
-        str
-            实际可用的后端名称。
-        """
-        # 先检查首选后端，避免同时加载两个后端导致内存不足
-        if preferred == "paddle":
-            from src.ocr_paddle import is_paddle_available
-            if is_paddle_available():
-                return "paddle"
-            # 回退到 lite
-            from src.ocr_lite import is_lite_available
-            if is_lite_available():
-                logger.info("PaddleOCR 不可用，回退到 RapidOCR")
-                return "lite"
-        else:
-            from src.ocr_lite import is_lite_available
-            if is_lite_available():
-                return "lite"
-            # 回退到 paddle
-            from src.ocr_paddle import is_paddle_available
-            if is_paddle_available():
-                logger.info("RapidOCR 不可用，回退到 PaddleOCR")
-                return "paddle"
-
-        # 都不可用
-        raise ImportError(
-            "无可用的 OCR 后端。请安装至少一种:\n"
-            "  pip install 'lawtomd[ocr]'      # PaddleOCR 高性能版\n"
-            "  pip install 'lawtomd[ocr-lite]'  # RapidOCR 轻量版"
-        )
-
-    def _create_backend(self, name: str) -> OcrBackendProtocol:
-        """创建后端实例。"""
-        if name == "paddle":
-            from src.ocr_paddle import PaddleOcrBackend
-
-            return PaddleOcrBackend()
-        elif name == "lite":
-            from src.ocr_lite import LiteOcrBackend
-
-            return LiteOcrBackend()
-        else:
-            raise ValueError(f"未知 OCR 后端: {name}")
-
     def ocr_page(
         self,
         image,
@@ -199,8 +97,6 @@ class OcrEngine:
         dpi: int = 300,
     ) -> list[LineMeta]:
         """对单张 PIL Image 执行 OCR，返回 LineMeta 列表。
-
-        委托给当前后端执行实际 OCR 操作。
 
         Parameters
         ----------
@@ -222,19 +118,15 @@ class OcrEngine:
 
     @property
     def backend_name(self) -> str:
-        """当前使用的后端名称。"""
-        return self._backend_name
+        return "paddle"
 
     @property
     def backend_display_name(self) -> str:
-        """当前后端的显示名称。"""
-        if self._backend is not None:
-            return self._backend.display_name
-        return self._backend_name
+        return "PaddleOCR (高性能)"
 
     @property
     def profile(self) -> Optional[DeviceProfile]:
-        """设备性能档案（仅 backend="auto" 时有值）。"""
+        """设备性能档案。"""
         return self._profile
 
 

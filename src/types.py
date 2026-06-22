@@ -12,21 +12,18 @@ from src.models import LineMeta
 # OCR 模式：auto=对无文字页面回退, force=强制所有页面, off=禁用
 OcrMode = Literal["auto", "force", "off"]
 
-# OCR 引擎选择：auto=根据设备性能自动推荐, paddle=PaddleOCR高性能, lite=RapidOCR轻量版
-OcrEngineChoice = Literal["auto", "paddle", "lite"]
-
 
 @runtime_checkable
 class OcrBackendProtocol(Protocol):
     """OCR 后端必须实现的协议接口。
 
-    所有 OCR 后端（PaddleOCR、RapidOCR 等）必须实现此协议，
+    所有 OCR 后端必须实现此协议，
     以确保 OcrEngine 调度器可以统一调用。
     """
 
     @property
     def name(self) -> str:
-        """后端标识名（如 'paddle', 'lite'）。"""
+        """后端标识名（如 'paddle'）。"""
         ...
 
     @property

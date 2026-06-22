@@ -21,7 +21,7 @@ from src.builder import build_markdown
 from src.extractor import extract_pdf
 from src.models import LawMeta, Level
 from src.structure import parse_structure
-from src.types import OcrEngineChoice, OcrMode
+from src.types import OcrMode
 
 logger = logging.getLogger(__name__)
 
@@ -50,17 +50,12 @@ def cli(verbose: int) -> None:
 # ── 性能检测展示 ──────────────────────────────────────────
 
 
-def _show_device_profile(ocr_engine: str) -> None:
-    """当使用 OCR 时，展示设备性能检测结果和方案推荐。"""
-    if ocr_engine == "auto":
-        from src.profiler import detect_device_profile
+def _show_device_profile() -> None:
+    """当使用 OCR 时，展示设备性能检测结果。"""
+    from src.profiler import detect_device_profile
 
-        profile = detect_device_profile()
-        click.echo(profile.summary(), err=True)
-    elif ocr_engine == "paddle":
-        click.echo("OCR 方案: PaddleOCR (高性能, 用户手动选择)", err=True)
-    elif ocr_engine == "lite":
-        click.echo("OCR 方案: RapidOCR (轻量版, 用户手动选择)", err=True)
+    profile = detect_device_profile()
+    click.echo(profile.summary(), err=True)
 
 
 # ── 单文件转换 ────────────────────────────────────────────
@@ -88,13 +83,6 @@ def _show_device_profile(ocr_engine: str) -> None:
     show_default=True,
     help="OCR 模式: auto=对无文字页面回退, force=强制所有页面, off=禁用",
 )
-@click.option(
-    "--ocr-engine",
-    type=click.Choice(["auto", "paddle", "lite"]),
-    default="auto",
-    show_default=True,
-    help="OCR 引擎: auto=根据设备性能自动推荐, paddle=PaddleOCR高性能, lite=RapidOCR轻量版",
-)
 def convert(
     pdf_path: str,
     output: Optional[str],
@@ -105,7 +93,6 @@ def convert(
     validate: bool,
     output_format: str,
     ocr: str,
-    ocr_engine: str,
 ) -> None:
     """将单个法律 PDF 转换为 Markdown。"""
     pdf = Path(pdf_path)
@@ -115,9 +102,9 @@ def convert(
 
     click.echo(f"解析: {pdf.name} ...", err=True)
 
-    # 展示设备性能检测和 OCR 方案推荐
+    # 展示设备性能检测和 OCR 方案
     if ocr != "off":
-        _show_device_profile(ocr_engine)
+        _show_device_profile()
 
     # Step 1: 提取
     lines, meta = extract_pdf(
@@ -125,7 +112,6 @@ def convert(
         max_pages=max_pages,
         filter_header_footer=not no_filter,
         ocr_mode=cast(OcrMode, ocr),
-        ocr_engine=cast(OcrEngineChoice, ocr_engine),
     )
     click.echo(f"  提取 | 行: {len(lines)} | 法规: {meta.name or '?'}", err=True)
 
@@ -168,6 +154,14 @@ def convert(
 @click.option("--flatten", is_flag=True, help="输出到单层目录（默认保持子目录结构）")
 @click.option("--no-filter", is_flag=True, help="不过滤页眉页脚")
 @click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["md", "json"]),
+    default="md",
+    show_default=True,
+    help="输出格式: md=Markdown, json=结构化JSON",
+)
+@click.option(
     "--workers",
     type=int,
     default=1,
@@ -181,22 +175,15 @@ def convert(
     show_default=True,
     help="OCR 模式: auto=对无文字页面回退, force=强制所有页面, off=禁用",
 )
-@click.option(
-    "--ocr-engine",
-    type=click.Choice(["auto", "paddle", "lite"]),
-    default="auto",
-    show_default=True,
-    help="OCR 引擎: auto=根据设备性能自动推荐, paddle=PaddleOCR高性能, lite=RapidOCR轻量版",
-)
 def batch(
     pdf_dir: str,
     output: str,
     max_pages: Optional[int],
     flatten: bool,
     no_filter: bool,
+    output_format: str,
     workers: int,
     ocr: str,
-    ocr_engine: str,
 ) -> None:
     """批量处理目录中的所有 PDF。"""
     src_dir = Path(pdf_dir)
@@ -210,39 +197,44 @@ def batch(
 
     click.echo(f"批量处理: {len(pdf_files)} 个文件", err=True)
 
-    # 展示设备性能检测和 OCR 方案推荐
+    # 展示设备性能检测和 OCR 方案
     if ocr != "off":
-        _show_device_profile(ocr_engine)
+        _show_device_profile()
 
     # 构建任务参数
+    ext = ".json" if output_format == "json" else ".md"
     tasks = []
     for pdf_path in pdf_files:
         rel = pdf_path.relative_to(src_dir)
-        out_name = rel.with_suffix(".md")
+        out_name = rel.with_suffix(ext)
         if flatten:
             out_path = out_dir / out_name.name
         else:
             out_path = out_dir / out_name
             out_path.parent.mkdir(parents=True, exist_ok=True)
-        tasks.append((str(pdf_path), str(out_path)))
+        tasks.append((str(pdf_path), str(out_path), output_format))
 
     if workers > 1:
         from concurrent.futures import ProcessPoolExecutor, as_completed
 
         def _process_one(args):
-            pdf_path, out_path = args
+            pdf_path, out_path, fmt = args
             try:
                 lines, meta = extract_pdf(
                     pdf_path,
                     max_pages=max_pages,
                     filter_header_footer=not no_filter,
                     ocr_mode=cast(OcrMode, ocr),
-                    ocr_engine=cast(OcrEngineChoice, ocr_engine),
                 )
                 tree = parse_structure(lines, doc_type=meta.doc_type, meta=meta)
-                md = build_markdown(tree, meta, include_toc=False, article_anchor=True)
-                with open(out_path, "w", encoding="utf-8") as f:
-                    f.write(md)
+                if fmt == "json":
+                    data = _tree_to_json(tree, meta)
+                    with open(out_path, "w", encoding="utf-8") as f:
+                        json.dump(data, f, ensure_ascii=False, indent=2)
+                else:
+                    md = build_markdown(tree, meta, include_toc=False, article_anchor=True)
+                    with open(out_path, "w", encoding="utf-8") as f:
+                        f.write(md)
                 return Path(pdf_path).name, None
             except Exception as e:
                 return Path(pdf_path).name, str(e)
@@ -274,24 +266,28 @@ def batch(
             pbar = None
 
         iterable = pbar if pbar else tasks
-        for pdf_path_str, out_path_str in iterable:
+        for pdf_path_str, out_path_str, fmt in iterable:
             try:
                 lines, meta = extract_pdf(
                     pdf_path_str,
                     max_pages=max_pages,
                     filter_header_footer=not no_filter,
                     ocr_mode=cast(OcrMode, ocr),
-                    ocr_engine=cast(OcrEngineChoice, ocr_engine),
                 )
                 tree = parse_structure(lines, doc_type=meta.doc_type, meta=meta)
-                md = build_markdown(tree, meta, include_toc=False, article_anchor=True)
-                with open(out_path_str, "w", encoding="utf-8") as f:
-                    f.write(md)
+                if fmt == "json":
+                    data = _tree_to_json(tree, meta)
+                    with open(out_path_str, "w", encoding="utf-8") as f:
+                        json.dump(data, f, ensure_ascii=False, indent=2)
+                else:
+                    md = build_markdown(tree, meta, include_toc=False, article_anchor=True)
+                    with open(out_path_str, "w", encoding="utf-8") as f:
+                        f.write(md)
 
                 if pbar:
                     pbar.set_postfix_str(f"✓ {Path(pdf_path_str).name}")
 
-                del lines, tree, meta, md
+                del lines, tree, meta
                 import gc
                 gc.collect()
             except Exception as e:
@@ -310,29 +306,17 @@ def batch(
 
 @cli.command()
 def profile() -> None:
-    """检测设备性能并显示 OCR 方案推荐。"""
-    from src.profiler import detect_device_profile, recommend_ocr_backend
-    from src.ocr import is_paddle_available, is_lite_available
+    """检测设备性能并显示 PaddleOCR 状态。"""
+    from src.profiler import detect_device_profile
+    from src.ocr import is_available
 
     profile_result = detect_device_profile()
-    recommended = recommend_ocr_backend(profile_result)
-
     click.echo(profile_result.summary(), err=True)
     click.echo("", err=True)
 
-    # 显示可用后端
-    paddle_ok = is_paddle_available()
-    lite_ok = is_lite_available()
-
-    click.echo("OCR 后端可用性:", err=True)
-    click.echo(f"  PaddleOCR (高性能): {'已安装' if paddle_ok else '未安装 (pip install lawtomd[ocr])'}", err=True)
-    click.echo(f"  RapidOCR (轻量版): {'已安装' if lite_ok else '未安装 (pip install lawtomd[ocr-lite])'}", err=True)
-    click.echo("", err=True)
-
-    if recommended == "paddle" and not paddle_ok:
-        click.echo("注意: 推荐 PaddleOCR 但未安装，将回退到 RapidOCR", err=True)
-    elif recommended == "lite" and not lite_ok:
-        click.echo("注意: 推荐 RapidOCR 但未安装，将回退到 PaddleOCR", err=True)
+    paddle_ok = is_available()
+    click.echo("PaddleOCR 状态:", err=True)
+    click.echo(f"  {'已安装' if paddle_ok else '未安装 (pip install lawtomd[ocr])'}", err=True)
 
 
 # ── 辅助 ──────────────────────────────────────────────────

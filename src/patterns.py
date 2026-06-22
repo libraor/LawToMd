@@ -85,6 +85,39 @@ RE_JUDGES = re.compile(
     r"^(审判长|审判员|代理审判员|陪审员|法官助理|书记员)[：:]?\s*\S"
 )
 
+# ── 法律书籍结构模式 ──────────────────────────────────────
+
+# 前言/序言/导言
+RE_PREFACE = re.compile(
+    r"^(前言|序言|序|自序|代序|导言|导论|引言|再版序|修订序|第[一二三四五六七八九十]版序)[：:]?$"
+)
+
+# 后记/跋/附录
+RE_APPENDIX = re.compile(
+    r"^(后记|跋|附录[一二三四五六七八九十零〇]?$|附录\s*[一二三四五六七八九十零〇]+$|附录\s*\d+$)"
+)
+
+# 小节标题：如 "一、" "二、" "（一）" "（二）"（节下更细分层）
+# 注意：与法规的项（SUB_CLAUSE）模式重叠，书籍中作为小节标题使用
+RE_BOOK_SUBSECTION = re.compile(
+    rf"^[一二三四五六七八九十]+[、．.]"
+)
+
+# 脚注标记：页底的小字注释，通常以 ①②③ 或 [1][2] 或 ①② 标记
+RE_FOOTNOTE_MARK = re.compile(
+    r"^[①②③④⑤⑥⑦⑧⑨⑩]|\[\d+\]"
+)
+
+# ISBN
+RE_ISBN = re.compile(
+    r"ISBN[\s\-]*\d+[\s\-]*\d*[\s\-]*\d*[\s\-]*\d*[\s\-]*[\dXx]"
+)
+
+# 出版社信息：如 "XX出版社" "XX大学出版社"
+RE_PUBLISHER = re.compile(
+    r"[\u4e00-\u9fff]+出版社"
+)
+
 # ── 法律引用标注模式 ──────────────────────────────────────
 
 # 法条引用："《XXX》第X条" "《XXX》第X条第X款"
@@ -116,6 +149,10 @@ LEVEL_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("sub_clause", RE_SUB_CLAUSE_PAREN),
     ("sub_clause", RE_SUB_CLAUSE_NUM),
     ("item", RE_ITEM),
+    # 书籍专用
+    ("preface", RE_PREFACE),
+    ("appendix", RE_APPENDIX),
+    ("subsection", RE_BOOK_SUBSECTION),
 ]
 
 
@@ -151,6 +188,16 @@ def detect_doc_type(text: str) -> str:
     # 司法解释：含"法释〔YYYY〕XX号"（无需逐行，search 即可）
     if RE_JUDICIAL_INTERPRETATION.search(text):
         return "interpretation"
+
+    # 法律书籍：含前言/序言/后记/附录 + 出版社/ISBN
+    has_book_marker = False
+    has_publisher = bool(RE_PUBLISHER.search(text)) or bool(RE_ISBN.search(text))
+    for line in text.splitlines():
+        if RE_PREFACE.match(line) or RE_APPENDIX.match(line):
+            has_book_marker = True
+            break
+    if has_book_marker or has_publisher:
+        return "book"
 
     # 法律法规：含编/章/节/条结构
     for line in text.splitlines():

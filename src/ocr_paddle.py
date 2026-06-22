@@ -14,6 +14,7 @@ GPU 自动检测和 OCR 结果→LineMeta 转换。
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Sequence
 
 from src.models import LineMeta
@@ -67,7 +68,7 @@ class PaddleOcrBackend:
 
     @property
     def display_name(self) -> str:
-        return "PaddleOCR (高性能)"
+        return "PaddleOCR (PP-OCRv6)"
 
     def _initialize(self) -> None:
         """延迟导入 PaddleOCR 并初始化引擎。"""
@@ -85,17 +86,31 @@ class PaddleOcrBackend:
 
             # 检测 GPU 可用性
             use_gpu = self._detect_gpu_available()
+            device = "gpu" if use_gpu else "cpu"
 
+            # PaddleOCR 3.x API: PP-OCRv6_medium
+            # text_det_limit_side_len 控制检测阶段图像缩放上限
+            det_model = "PP-OCRv6_medium_det"
+            rec_model = "PP-OCRv6_medium_rec"
+            ocr_ver = "PP-OCRv6"
             self._ocr = PaddleOCR(
-                use_angle_cls=True,
-                lang="ch",
-                show_log=False,
-                use_gpu=use_gpu,
-                cpu_threads=1 if not use_gpu else 0,
+                use_doc_orientation_classify=False,
+                use_doc_unwarping=False,
+                use_textline_orientation=True,
+                device=device,
+                ocr_version=ocr_ver,
+                text_detection_model_name=det_model,
+                text_recognition_model_name=rec_model,
+                text_det_limit_side_len=2000,
+                text_det_limit_type="max",
+                # 禁用 oneDNN，规避 PaddlePaddle 3.x PIR 执行器 bug
+                # ConvertPirAttribute2RuntimeAttribute not support
+                enable_mkldnn=False,
             )
             self._initialized = True
             gpu_status = "GPU" if use_gpu else "CPU"
-            logger.info("PaddleOCR 引擎初始化完成 (%s mode)", gpu_status)
+            model_tag = f"{ocr_ver}_mobile"
+            logger.info("PaddleOCR 引擎初始化完成 (%s mode, %s)", gpu_status, model_tag)
         except ImportError as e:
             raise ImportError(
                 "PaddleOCR 依赖未安装。请运行: pip install 'lawtomd[ocr]'"
@@ -148,26 +163,37 @@ class PaddleOcrBackend:
         else:
             img_input = image
 
-        raw = self._ocr.ocr(img_input, cls=True)
-        if not raw or not raw[0]:
+        # PaddleOCR 3.x: 使用 predict() 替代已废弃的 ocr()
+        raw = self._ocr.predict(img_input)
+        if not raw:
             return []
 
-        results = raw[0]
         lines: list[LineMeta] = []
 
-        for item in results:
-            bbox, info = item
-            text, confidence = info
-            if not text or not text.strip():
-                continue
-            if confidence < min_confidence:
-                logger.debug(
-                    "跳过低置信度文本 '%s' (conf=%.3f)", text, confidence
-                )
+        # PaddleOCR 3.x 返回 OCRResult 对象列表
+        for page_result in raw:
+            dt_polys = page_result.get("dt_polys", [])
+            rec_texts = page_result.get("rec_texts", [])
+            rec_scores = page_result.get("rec_scores", [])
+
+            if not dt_polys or not rec_texts:
                 continue
 
-            line = _paddle_bbox_to_linemeta(bbox, text, page_num, dpi=dpi)
-            lines.append(line)
+            for bbox, text, score in zip(dt_polys, rec_texts, rec_scores):
+                if not text or not text.strip():
+                    continue
+                if score < min_confidence:
+                    logger.debug(
+                        "跳过低置信度文本 '%s' (conf=%.3f)", text, score
+                    )
+                    continue
+
+                # 将 numpy 数组转换为列表
+                if hasattr(bbox, "tolist"):
+                    bbox = bbox.tolist()
+                
+                line = _paddle_bbox_to_linemeta(bbox, text, page_num, dpi=dpi)
+                lines.append(line)
 
         lines.sort(key=lambda line: (line.y0, line.x0))
         return lines

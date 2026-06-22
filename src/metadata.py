@@ -13,7 +13,9 @@ from src.patterns import (
     RE_CASE_NUMBER,
     RE_DATE,
     RE_DOC_ID,
+    RE_ISBN,
     RE_JUDGMENT_TITLE,
+    RE_PUBLISHER,
     detect_doc_type,
 )
 
@@ -74,6 +76,10 @@ def extract_meta_from_page(
     if meta.doc_type == DocType.JUDGMENT:
         _extract_judgment_meta(meta, text, page_lines)
 
+    # ── 书籍特有元数据 ──
+    if meta.doc_type == DocType.BOOK:
+        _extract_book_meta(meta, text, page_lines)
+
 
 def _extract_judgment_meta(
     meta: LawMeta,
@@ -99,3 +105,44 @@ def _extract_judgment_meta(
     dates = RE_DATE.findall(text)
     if dates:
         meta.extra["judgment_date"] = dates[-1].strip()
+
+
+def _extract_book_meta(
+    meta: LawMeta,
+    text: str,
+    page_lines: list[LineMeta],
+) -> None:
+    """从法律书籍首页提取特有元数据。"""
+    # ISBN
+    for m in RE_ISBN.finditer(text):
+        meta.extra["isbn"] = m.group(0).strip()
+        break
+
+    # 出版社
+    for m in RE_PUBLISHER.finditer(text):
+        meta.extra["publisher"] = m.group(0).strip()
+        break
+
+    # 作者：通常在标题下方，字号略小于标题但仍是较大字号
+    if page_lines:
+        max_font_size = max(
+            (line.font_size for line in page_lines if line.font_size > 0),
+            default=0,
+        )
+        # 作者行：字号 >= 标题字号的 70% 且 < 标题字号，且不是标题行本身
+        author_candidates = [
+            line.text for line in page_lines
+            if max_font_size * 0.7 <= line.font_size < max_font_size
+            and line.font_size > 0
+            and len(line.text) > 1
+            and len(line.text) < 30  # 作者名通常较短
+            and not RE_PUBLISHER.search(line.text)
+            and not RE_ISBN.search(line.text)
+        ]
+        if author_candidates:
+            meta.extra["author"] = author_candidates[0]
+
+    # 出版日期：取首页最后一个日期
+    dates = RE_DATE.findall(text)
+    if dates:
+        meta.extra["publish_date"] = dates[-1].strip()

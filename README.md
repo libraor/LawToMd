@@ -2,7 +2,7 @@
 
 **法律文档 PDF → Markdown 转换工具**，面向批量化法律文档处理。
 
-自动识别法律文档特有的 **编 → 章 → 节 → 条 → 款 → 项 → 目** 层级结构，支持法律法规、判决书、司法解释等多种文档类型，输出结构化 Markdown。
+自动识别法律文档特有的 **编 → 章 → 节 → 条 → 款 → 项 → 目** 层级结构，支持法律法规、判决书、司法解释、法律书籍等多种文档类型，输出结构化 Markdown。
 
 ---
 
@@ -11,6 +11,7 @@
 - **法律知识库构建** — 批量处理整套法规体系，生成结构化文档
 - **判决书电子化** — 将法院判决书、裁定书转换为结构化 Markdown
 - **司法解释归档** — 处理司法解释、批复、答复等文档
+- **法律书籍电子化** — 将法律教材、专著、工具书转换为结构化文档，保留前言/后记/脚注
 - **法条对比分析** — 新旧法规条文级别的差异比对
 - **LLM 微调数据准备** — 清洗、结构化后的高质量法律语料
 - **法律引用分析** — 自动提取文档中的法律引用标注（如"《民法典》第一百四十三条"）
@@ -20,7 +21,7 @@
 ## 功能
 
 - 📄 **PDF 文本提取** — 基于 pdfplumber，保留坐标、字号、加粗等信息，过滤页眉页脚
-- 🔍 **双 OCR 后端** — PaddleOCR（高性能）+ RapidOCR（轻量版），根据设备性能自动推荐
+- 🔍 **OCR 支持** — 统一使用 PaddleOCR，自动检测 GPU 并启用加速
 - 🏛 **多文档类型支持** — 自动检测并适配法律法规、判决书、司法解释的结构解析策略
 - ⚖️ **法律术语识别** — 覆盖编/章/节/条/款/项/目结构，当事人/诉讼记录/裁判结果等判决书元素
 - 🔗 **引用标注提取** — 自动识别并输出法律引用（`《XXX》第X条第X款第X项`）
@@ -40,11 +41,8 @@ git clone https://github.com/YOUR_ORG/lawtomd.git
 cd lawtomd
 pip install -e .
 
-# 安装 PaddleOCR 高性能版（适合高配设备）
+# 安装 PaddleOCR（含 OCR 支持）
 pip install -e ".[ocr]"
-
-# 安装 EasyOCR 轻量版（适合低配设备，内存占用小）
-pip install -e ".[ocr-lite]"
 
 # 确认安装
 lawtomd --help
@@ -54,20 +52,9 @@ lawtomd --help
 
 ---
 
-## OCR 配置要求
+## OCR 配置
 
-LawToMd 提供两种 OCR 后端，可根据设备性能自动选择或手动指定。
-
-### 后端对比
-
-| 特性 | PaddleOCR (高性能) | EasyOCR (轻量版) |
-|------|-------------------|-------------------|
-| 安装方式 | `pip install -e ".[ocr]"` | `pip install -e ".[ocr-lite]"` |
-| 推理框架 | PaddlePaddle | PyTorch |
-| 内存占用 | 1-2 GB | < 500 MB |
-| 识别准确率 | 高 | 中高 |
-| GPU 加速 | 支持 | 支持（需 CUDA） |
-| 适用场景 | 高配设备（≥4核/≥8GB/独显） | 低配设备、轻量部署 |
+LawToMd 统一使用 **PaddleOCR** 作为唯一 OCR 后端，自动检测 GPU 并启用加速。
 
 ### PaddleOCR 依赖清单
 
@@ -79,30 +66,21 @@ LawToMd 提供两种 OCR 后端，可根据设备性能自动选择或手动指�
 | `PyMuPDF` | >=1.23.0 | PDF 页面→图像渲染 |
 | `Pillow` | >=10.0 | 图像处理 |
 
-### EasyOCR 依赖清单
-
-| 包 | 版本 | 用途 |
-|---|---|---|
-| `easyocr` | >=1.7.0 | 轻量 OCR 引擎（PyTorch 推理） |
-| `PyMuPDF` | >=1.23.0 | PDF 页面→图像渲染 |
-| `Pillow` | >=10.0 | 图像处理 |
-
 ### 系统要求
 
 | 项目 | 要求 |
 |---|---|
 | **Python** | >=3.10, <=3.13 |
-| **内存** | PaddleOCR 建议 >=4GB；EasyOCR 建议 >=2GB |
-| **磁盘** | PaddleOCR 首次运行自动下载模型（约 50MB）；EasyOCR 模型更小 |
-| **CPU** | 最低支持，默认单线程运行 |
-| **GPU** | 可选（PaddleOCR 需 `paddlepaddle-gpu`；EasyOCR 需 PyTorch + CUDA） |
+| **内存** | 建议 >=4GB |
+| **磁盘** | 首次运行自动下载模型（约 50MB） |
+| **CPU** | 支持，默认单线程运行 |
+| **GPU** | 可选（NVIDIA CUDA，自动检测并启用） |
 
-### 自动推荐机制
+### GPU 自动检测
 
-使用 `--ocr-engine auto`（默认）时，LawToMd 会自动检测设备性能并推荐后端：
-
-- **高性能**（CPU ≥ 4 核 且 内存 ≥ 8GB 且 具备独立显卡）→ 推荐 PaddleOCR
-- **低性能**（不满足上述任一条件）→ 推荐 EasyOCR
+LawToMd 启动时会自动检测设备性能：
+- 检测到 NVIDIA 独立显卡 → PaddleOCR 启用 GPU 加速
+- 无 GPU 或仅有集成显卡 → 以 CPU 模式运行
 
 可通过 `lawtomd profile` 命令查看检测结果。
 
@@ -115,15 +93,14 @@ LawToMd 提供两种 OCR 后端，可根据设备性能自动选择或手动指�
 ### 验证 OCR 可用
 
 ```bash
-# 查看设备性能检测和 OCR 方案推荐
+# 查看设备性能检测
 lawtomd profile
 
-# 转换时启用自动 OCR 模式（自动选择后端）
+# 转换时启用自动 OCR 模式
 lawtomd convert 扫描件.pdf --ocr auto
 
-# 手动指定 OCR 后端
-lawtomd convert 扫描件.pdf --ocr auto --ocr-engine paddle
-lawtomd convert 扫描件.pdf --ocr auto --ocr-engine lite
+# 强制所有页面使用 OCR
+lawtomd convert 扫描件.pdf --ocr force
 
 # 使用 verbose 查看初始化日志
 lawtomd -vv convert 扫描件.pdf --ocr auto
@@ -132,15 +109,8 @@ lawtomd -vv convert 扫描件.pdf --ocr auto
 初始化成功会看到类似日志：
 
 ```
-[INFO] src.ocr: OCR 后端选择: paddle (自动推荐: 设备性能=high)
-[INFO] src.ocr_paddle: PaddleOCR 引擎初始化完成 (CPU mode)
-```
-
-或
-
-```
-[INFO] src.ocr: OCR 后端选择: lite (自动推荐: 设备性能=low)
-[INFO] src.ocr_lite: EasyOCR 引擎初始化完成 (轻量模式, CPU)
+[INFO] src.ocr: OCR 引擎初始化: PaddleOCR (设备性能=high)
+[INFO] src.ocr_paddle: PaddleOCR 引擎初始化完成 (GPU mode)
 ```
 
 ---
@@ -151,16 +121,16 @@ lawtomd -vv convert 扫描件.pdf --ocr auto
 # 单文件转换
 lawtomd convert 民法典.pdf
 
-# 对扫描件自动启用 OCR（自动选择后端）
+# 对扫描件自动启用 OCR
 lawtomd convert 扫描件.pdf --ocr auto
 
-# 强制所有页面使用 OCR，指定 PaddleOCR 后端
-lawtomd convert 扫描件.pdf --ocr force --ocr-engine paddle
+# 强制所有页面使用 OCR
+lawtomd convert 扫描件.pdf --ocr force
 
 # 批量处理一批法规
 lawtomd batch ./法规目录/ -o ./output/
 
-# 查看设备性能和 OCR 方案推荐
+# 查看设备性能检测
 lawtomd profile
 ```
 
@@ -189,7 +159,6 @@ lawtomd convert <PDF_PATH> [选项]
 | `--toc` | 不生成 | 在 Markdown 开头生成目录 |
 | `--no-anchor` | 生成 | 不添加 `<!-- anchor -->` 注释 |
 | `--ocr` | `off` | OCR 模式: `auto`=对无文字页面回退, `force`=强制所有页面, `off`=禁用 |
-| `--ocr-engine` | `auto` | OCR 引擎: `auto`=根据设备性能自动推荐, `paddle`=PaddleOCR高性能, `lite`=EasyOCR轻量版 |
 | `--format` | `markdown` | 输出格式: `markdown` 或 `json` |
 | `--validate` | 不校验 | 校验条号连续性，检测缺失条号 |
 
@@ -205,8 +174,8 @@ lawtomd convert 民法典.pdf -o output/民法典.md
 # 预览前 10 页
 lawtomd convert 民法典.pdf --max-pages 10
 
-# OCR 自动模式 + 指定轻量版后端
-lawtomd convert 扫描件.pdf --ocr auto --ocr-engine lite
+# OCR 自动模式
+lawtomd convert 扫描件.pdf --ocr auto
 
 # 输出结构化 JSON
 lawtomd convert 民法典.pdf --format json
@@ -228,7 +197,6 @@ lawtomd batch <PDF_DIR> [选项]
 | `--flatten` | 不展开 | 扁平化到单层目录 |
 | `--no-filter` | 过滤 | 不过滤页眉页脚 |
 | `--ocr` | `off` | OCR 模式: `auto`/`force`/`off` |
-| `--ocr-engine` | `auto` | OCR 引擎: `auto`/`paddle`/`lite` |
 | `--workers` | CPU 核心数 | 并行处理文件数 |
 
 **示例：**
@@ -240,7 +208,7 @@ lawtomd batch ./pdfs/ -o ./output/
 # 扁平化输出（所有 .md 在同一目录）
 lawtomd batch ./pdfs/ -o ./output/ --flatten
 
-# 批量 OCR，自动选择后端
+# 批量 OCR
 lawtomd batch ./pdfs/ -o ./output/ --ocr auto
 
 # 并行处理（8 个并发）
@@ -323,6 +291,7 @@ doc_type: judgment
 | **法律法规** | 含编/章/节/条结构 | 编→章→节→条→款→项→目 |
 | **判决书/裁定书** | 含"法院名称+民事/刑事/行政+判决书" | 当事人→诉讼记录→裁判结果→审判人员 |
 | **司法解释** | 含"法释〔YYYY〕XX号" | 按法规结构解析 |
+| **法律书籍** | 含前言/序言/出版社/ISBN | 前言→章→节→小节→正文+脚注→附录/后记 |
 | **其他法律文档** | 无上述特征 | 回退到通用编/章/节/条解析 |
 
 ---
@@ -359,11 +328,10 @@ PDF 文件 ─────→│    extractor.py     │── → LineMeta[]
 | 元数据提取 | `metadata.py` | 法规标题、文号、日期、颁布机关等元数据提取 |
 | 结构识别 | `structure.py` | 多策略解析（法规/判决书）、层级状态机、款缩进检测、子条款归并、引用提取 |
 | Markdown 组装 | `builder.py` | YAML 元数据头（文档类型感知）、层级标题映射、anchor + 引用注释、JSON 输出 |
-| OCR 调度器 | `ocr.py` | 统一 OcrEngine 接口，自动选择/回退后端，PDF 页面→图像渲染 |
+| OCR 调度器 | `ocr.py` | 统一 OcrEngine 接口，PDF 页面→图像渲染 |
 | PaddleOCR 后端 | `ocr_paddle.py` | PaddleOCR 延迟初始化，GPU 自动检测，坐标转换 |
-| EasyOCR 后端 | `ocr_lite.py` | EasyOCR (PyTorch) 轻量后端，低内存占用，GPU 可选加速 |
-| 设备检测 | `profiler.py` | CPU/内存/GPU 检测，性能分级，OCR 后端推荐 |
-| 类型定义 | `types.py` | OcrBackendProtocol、OcrMode、OcrEngineChoice 等公共类型 |
+| 设备检测 | `profiler.py` | CPU/内存/GPU 检测，GPU 可用性判断 |
+| 类型定义 | `types.py` | OcrBackendProtocol、OcrMode 等公共类型 |
 | CLI 入口 | `main.py` | click 命令组（convert + batch + profile），支持 --format/--validate/--workers 选项 |
 
 ---
@@ -379,23 +347,22 @@ PDF 文件 ─────→│    extractor.py     │── → LineMeta[]
 5. **目录去重**：同标题且无实质内容的节点自动合并
 6. **引用提取**：遍历树节点，提取所有法律引用标注（`《XXX》第X条`）
 
-### OCR 双后端架构
+### OCR 架构
 
 ```
-                    OcrEngine (调度器)
+                    OcrEngine (单例)
                    ┌────────────────┐
-                   │ backend="auto" │──→ profiler.py 检测设备性能
+                   │ PaddleOCR      │──→ profiler.py 检测 GPU 可用性
                    │                │    ┌──────────────────────┐
-                   │   高性能设备?   │──→ │ PaddleOcrBackend     │
-                   │                │    │ (ocr_paddle.py)      │
-                   │   低性能设备?   │──→ │ LiteOcrBackend       │
-                   │                │    │ (ocr_lite.py)        │
-                   └────────────────┘    └──────────────────────┘
+                   │   GPU 可用?    │──→ │ GPU 加速模式         │
+                   │                │    │                      │
+                   │   仅 CPU?      │──→ │ CPU 模式             │
+                   │                │    └──────────────────────┘
+                   └────────────────┘
 ```
 
-- **自动推荐**：`--ocr-engine auto`（默认）根据设备 CPU 核心数、内存、GPU 自动选择
-- **手动指定**：`--ocr-engine paddle` 或 `--ocr-engine lite`
-- **自动回退**：推荐的后端不可用时，自动切换到另一个可用后端
+- **GPU 自动检测**：启动时自动检测 NVIDIA GPU，有则启用加速
+- **单例模式**：全局复用，避免重复加载模型
 
 ### 文本规范化
 
@@ -437,8 +404,7 @@ LawToMd/
 │   ├── builder.py        # Markdown/JSON 组装
 │   ├── ocr.py            # OCR 引擎调度器（统一接口）
 │   ├── ocr_paddle.py     # PaddleOCR 高性能后端
-│   ├── ocr_lite.py       # EasyOCR 轻量版后端
-│   ├── profiler.py       # 设备性能检测 + OCR 方案推荐
+│   ├── profiler.py       # 设备性能检测 + GPU 可用性判断
 │   └── types.py          # 公共类型定义（OcrBackendProtocol 等）
 ├── config/
 │   └── replace.yaml      # 常用词替换规则
