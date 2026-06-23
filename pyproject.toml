@@ -31,7 +31,7 @@ dependencies = [
 
 [project.optional-dependencies]
 ocr = [
-    "paddlepaddle>=3.0.0",
+    "paddlepaddle>=3.2.1",
     "paddleocr>=3.2.0",
     "opencv-contrib-python>=4.10.0",
     "PyMuPDF>=1.23.0",

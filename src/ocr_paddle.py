@@ -68,7 +68,7 @@ class PaddleOcrBackend:
 
     @property
     def display_name(self) -> str:
-        return "PaddleOCR (PP-OCRv6)"
+        return "PaddleOCR (PP-OCRv5)"
 
     def _initialize(self) -> None:
         """延迟导入 PaddleOCR 并初始化引擎。"""
@@ -85,15 +85,21 @@ class PaddleOcrBackend:
             from paddleocr import PaddleOCR
 
             # 检测 GPU 可用性
-            use_gpu = self._detect_gpu_available()
+            # 设置环境变量 LAWTOMD_FORCE_CPU=1 可强制使用 CPU 模式
+            if os.environ.get("LAWTOMD_FORCE_CPU") == "1":
+                use_gpu = False
+            else:
+                use_gpu = self._detect_gpu_available()
             device = "gpu" if use_gpu else "cpu"
 
-            # PaddleOCR 3.x API: PP-OCRv6_medium
-            # text_det_limit_side_len 控制检测阶段图像缩放上限
-            det_model = "PP-OCRv6_medium_det"
-            rec_model = "PP-OCRv6_medium_rec"
-            ocr_ver = "PP-OCRv6"
-            self._ocr = PaddleOCR(
+            # PaddleOCR 3.x API: PP-OCRv5_mobile
+            # PP-OCRv6 模型导出有 bug (strides 属性类型错误)，暂不可用
+            det_model = "PP-OCRv5_mobile_det"
+            rec_model = "PP-OCRv5_mobile_rec"
+            ocr_ver = "PP-OCRv5"
+
+            # 构建引擎参数
+            ocr_kwargs = dict(
                 use_doc_orientation_classify=False,
                 use_doc_unwarping=False,
                 use_textline_orientation=True,
@@ -103,10 +109,30 @@ class PaddleOcrBackend:
                 text_recognition_model_name=rec_model,
                 text_det_limit_side_len=2000,
                 text_det_limit_type="max",
-                # 禁用 oneDNN，规避 PaddlePaddle 3.x PIR 执行器 bug
-                # ConvertPirAttribute2RuntimeAttribute not support
-                enable_mkldnn=False,
             )
+
+            if use_gpu:
+                # GPU 模式：优先使用 ONNX Runtime 后端
+                # PaddlePaddle 3.0 不支持 Blackwell 架构 (compute capability 12.0)，
+                # ONNX Runtime + CUDA 可绕过此限制
+                try:
+                    import onnxruntime  # noqa: F401
+
+                    ocr_kwargs["engine"] = "onnxruntime"
+                    ocr_kwargs["enable_mkldnn"] = False
+                    # 配置 ONNX Runtime 使用 GPU 执行提供者
+                    ocr_kwargs["engine_config"] = {
+                        "providers": ["CUDAExecutionProvider", "CPUExecutionProvider"]
+                    }
+                    logger.info("使用 ONNX Runtime 后端 (GPU)")
+                except ImportError:
+                    logger.warning("onnxruntime 未安装，回退到 PaddlePaddle 后端")
+            else:
+                # CPU 模式：禁用 oneDNN，规避 PIR 执行器 bug
+                # ConvertPirAttribute2RuntimeAttribute not support
+                ocr_kwargs["enable_mkldnn"] = False
+
+            self._ocr = PaddleOCR(**ocr_kwargs)
             self._initialized = True
             gpu_status = "GPU" if use_gpu else "CPU"
             model_tag = f"{ocr_ver}_mobile"

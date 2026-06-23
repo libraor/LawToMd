@@ -1,0 +1,25 @@
+services:
+  lawtomd-gpu:
+    image: ccr-2vdh3abv-pub.cnc.bj.baidubce.com/paddlepaddle/paddleocr-vl:latest-nvidia-gpu-sm120
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - LAWTOMD_USE_GPU=${LAWTOMD_USE_GPU:-1}
+      - OMP_NUM_THREADS=4
+      - INPUT_FILE=/app/input/${PDF_FILE}
+      - OUTPUT_FILE=/app/output/${OUTPUT_FILE:-output.md}
+    volumes:
+      - ./input:/app/input:ro
+      - ./output:/app/output
+      - ./src:/app/src:ro
+      - ./run_ocr.sh:/app/run_ocr.sh:ro
+    shm_size: '4g'
+    working_dir: /app
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    entrypoint: ["/bin/bash", "/app/run_ocr.sh"]
