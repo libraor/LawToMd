@@ -115,6 +115,112 @@ lawtomd -vv convert 扫描件.pdf --ocr auto
 
 ---
 
+## Docker GPU 加速（推荐用于 RTX 50 系列）
+
+针对 NVIDIA RTX 50 系列（Blackwell 架构）显卡，由于 PaddlePaddle 3.x 原生未完全支持 sm120 计算能力，**推荐使用官方 Docker 镜像**进行 GPU 加速。
+
+### 前置要求
+
+| 项目 | 要求 |
+|------|------|
+| **NVIDIA 驱动** | 支持 CUDA 12.9+ |
+| **Docker Desktop** | 已安装并启动 |
+| **NVIDIA Container Toolkit** | Docker Desktop 自带 WSL2 GPU 支持 |
+| **NVIDIA GPU** | RTX 5060/5070/5080/5090 等 Blackwell 架构 |
+
+### 使用流程
+
+**1. 启动 Docker Desktop**
+
+GPU 模式依赖 Docker 容器运行，**必须先启动 Docker Desktop** 才能使用 GPU：
+
+- 开始菜单 → Docker Desktop
+- 等待系统托盘图标变绿（约 30 秒）
+- 可在 Docker Desktop 设置中勾选 `Start Docker Desktop when you sign in` 实现开机自启
+
+**2. 运行 OCR 转换**
+
+#### 方式一：使用便捷脚本（推荐）
+
+将 PDF 文件放入 `input/` 目录后，直接运行：
+
+```powershell
+# 自动处理 input 文件夹下的 PDF
+.\convert-input.ps1
+
+# 指定文件名和输出名
+.\convert-input.ps1 -PdfFile "你的文件.pdf" -Output "结果.md"
+```
+
+输出文件自动保存到 `output/` 目录。
+
+#### 方式二：手动设置环境变量
+
+```powershell
+# 设置输入/输出文件名
+$env:PDF_FILE="你的文件.pdf"
+$env:OUTPUT_FILE="output.md"
+
+# 启动容器进行 OCR（自动使用 GPU）
+docker compose run --rm lawtomd-gpu
+```
+
+**3. 完成后**
+
+- 容器自动退出，GPU 资源自动释放
+- 输出文件保存到 `./output/` 目录
+- 不使用时可关闭 Docker Desktop，不影响日常工作
+
+### 配置说明
+
+| 配置项 | 当前值 | 说明 |
+|--------|--------|------|
+| **镜像** | `paddleocr-vl:latest-nvidia-gpu-sm120` | 官方 Blackwell 专用镜像 |
+| **检测模型** | `PP-OCRv4_server_det` | 高精度文字检测 |
+| **识别模型** | `PP-OCRv4_server_rec` | 高精度文字识别 |
+| **后端** | PaddlePaddle GPU | 自动检测 RTX 5060 |
+
+### 模型版本对比
+
+实测 284 页法律书籍 PDF（RTX 5060）：
+
+| 模型 | 耗时 | 准确率 | 推荐场景 |
+|------|------|--------|---------|
+| **PP-OCRv4 server** | 9 分 20 秒 | ⭐⭐⭐⭐⭐ 最佳 | 准确率优先（推荐） |
+| PP-OCRv5 server | 7 分 59 秒 | ⭐⭐⭐⭐ 良好 | 平衡选择 |
+| PP-OCRv4 mobile | 5 分 11 秒 | ⭐⭐⭐ 一般 | 速度优先 |
+
+### CPU 模式（备选）
+
+如不希望启动 Docker，可使用 CPU 模式：
+
+```powershell
+$env:LAWTOMD_USE_GPU="0"
+$env:PDF_FILE="你的文件.pdf"
+docker compose run --rm lawtomd-gpu
+```
+
+或直接使用本地 Python 环境（不依赖 Docker）：
+
+```bash
+pip install -e ".[ocr]"
+lawtomd convert 你的文件.pdf --ocr force
+```
+
+### 优势 vs 劣势
+
+| 方面 | 说明 |
+|------|------|
+| ✅ 优势 | 需要 OCR 时才启动 Docker，平时 GPU 0 占用 |
+| ✅ 优势 | 不污染主机 Python 环境 |
+| ✅ 优势 | 避免 Blackwell 架构 PaddlePaddle 兼容性问题 |
+| ⚠️ 劣势 | 每次需启动 Docker Desktop |
+| ⚠️ 劣势 | 首次拉取镜像约 10GB |
+
+详细使用说明见 [DOCKER.md](./DOCKER.md)。
+
+---
+
 ## 快速开始
 
 ```bash

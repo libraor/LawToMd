@@ -11,8 +11,7 @@ services:
     volumes:
       - ./input:/app/input:ro
       - ./output:/app/output
-      - ./src:/app/src:ro
-      - ./run_ocr.sh:/app/run_ocr.sh:ro
+      - ./src:/app/src
     shm_size: '4g'
     working_dir: /app
     deploy:
@@ -22,4 +21,5 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
-    entrypoint: ["/bin/bash", "/app/run_ocr.sh"]
+    entrypoint: ["/bin/bash", "-c"]
+    command: ["pip install pdfplumber pyyaml PyMuPDF -q && python3 -m src.main convert '/app/input/${PDF_FILE}' --ocr force -o '/app/output/${OUTPUT_FILE:-output.md}'"]

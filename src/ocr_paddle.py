@@ -68,7 +68,8 @@ class PaddleOcrBackend:
 
     @property
     def display_name(self) -> str:
-        return "PaddleOCR (PP-OCRv5)"
+        return "PaddleOCR (PP-OCRv4 server)"
+
 
     def _initialize(self) -> None:
         """延迟导入 PaddleOCR 并初始化引擎。"""
@@ -92,11 +93,10 @@ class PaddleOcrBackend:
                 use_gpu = self._detect_gpu_available()
             device = "gpu" if use_gpu else "cpu"
 
-            # PaddleOCR 3.x API: PP-OCRv5_mobile
-            # PP-OCRv6 模型导出有 bug (strides 属性类型错误)，暂不可用
-            det_model = "PP-OCRv5_mobile_det"
-            rec_model = "PP-OCRv5_mobile_rec"
-            ocr_ver = "PP-OCRv5"
+            # PaddleOCR 3.x API: PP-OCRv4 server（高精度模型）
+            det_model = "PP-OCRv4_server_det"
+            rec_model = "PP-OCRv4_server_rec"
+            ocr_ver = "PP-OCRv4"
 
             # 构建引擎参数
             ocr_kwargs = dict(
@@ -135,7 +135,7 @@ class PaddleOcrBackend:
             self._ocr = PaddleOCR(**ocr_kwargs)
             self._initialized = True
             gpu_status = "GPU" if use_gpu else "CPU"
-            model_tag = f"{ocr_ver}_mobile"
+            model_tag = f"{det_model}_{rec_model}"
             logger.info("PaddleOCR 引擎初始化完成 (%s mode, %s)", gpu_status, model_tag)
         except ImportError as e:
             raise ImportError(
