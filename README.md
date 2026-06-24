@@ -2,7 +2,7 @@
 
 **法律文档 PDF → Markdown 转换工具**，面向批量化法律文档处理。
 
-自动识别法律文档特有的 **编 → 章 → 节 → 条 → 款 → 项 → 目** 层级结构，支持法律法规、判决书、司法解释、法律书籍等多种文档类型，输出结构化 Markdown。
+自动识别法律文档特有的 **编 → 章 → 节 → 条 → 款 → 项 → 目** 层级结构，支持法律法规、判决书、司法解释、法律书籍等多种文档类型，输出结构化 Markdown 或 JSON。
 
 ---
 
@@ -21,14 +21,16 @@
 ## 功能
 
 - 📄 **PDF 文本提取** — 基于 pdfplumber，保留坐标、字号、加粗等信息，过滤页眉页脚
-- 🔍 **OCR 支持** — 统一使用 PaddleOCR，自动检测 GPU 并启用加速
-- 🏛 **多文档类型支持** — 自动检测并适配法律法规、判决书、司法解释的结构解析策略
+- 🔍 **OCR 支持** — 统一 OCR API 接口，支持百度、阿里云、腾讯云等云端 OCR 服务
+- 🏛 **多文档类型支持** — 自动检测并适配法律法规、判决书、司法解释、法律书籍的结构解析策略
 - ⚖️ **法律术语识别** — 覆盖编/章/节/条/款/项/目结构，当事人/诉讼记录/裁判结果等判决书元素
-- 🔗 **引用标注提取** — 自动识别并输出法律引用（`《XXX》第X条第X款第X项`）
-- 📝 **结构化 Markdown** — YAML 元数据头 + 层级标题 + anchor 注释 + 引用标注
-- ⚡ **批量处理** — 递归扫描目录，保持子目录结构或扁平化输出
+- � **书籍结构识别** — 前言/序言/章/节/小节/正文+脚注/附录/后记完整链路
+- �🔗 **引用标注提取** — 自动识别并输出法律引用（`《XXX》第X条第X款第X项`），自动转为锚点链接
+- 📝 **结构化输出** — YAML 元数据头 + 层级标题 + anchor 注释 + 引用标注（Markdown / JSON）
+- ⚡ **批量并行处理** — 递归扫描目录，`--workers` 控制并发数，自动显示进度条
 - 🧹 **文本规范化** — 全角空格统一、OCR 误识别修正、自定义替换规则（`config/replace.yaml`）
-- 🖥 **设备性能检测** — 自动评估 CPU/内存/GPU，推荐最优 OCR 方案
+- ✅ **条号校验** — `--validate` 检测缺失条号，保障输出完整性
+- 📊 **表格提取** — 自动将 PDF 表格转为 Markdown 表格
 - 🔧 **可配置** — 页眉页脚过滤、目录生成、anchor 注释、OCR 引擎选择均可调
 
 ---
@@ -41,7 +43,7 @@ git clone https://github.com/YOUR_ORG/lawtomd.git
 cd lawtomd
 pip install -e .
 
-# 安装 PaddleOCR（含 OCR 支持）
+# 安装 OCR API 依赖（含云端 OCR 支持）
 pip install -e ".[ocr]"
 
 # 确认安装
@@ -50,174 +52,64 @@ lawtomd --help
 
 **核心依赖**：`pdfplumber` (PDF 解析引擎)、`click` (CLI 框架)、`pyyaml` (配置文件解析)。
 
+**系统要求**：Python >=3.10, <=3.13
+
 ---
 
 ## OCR 配置
 
-LawToMd 统一使用 **PaddleOCR** 作为唯一 OCR 后端，自动检测 GPU 并启用加速。
+LawToMd 使用 **第三方 OCR API** 作为 OCR 后端，通过 HTTP 调用云端 OCR 服务。支持百度、阿里云、腾讯云及自定义 API 端点。
 
-### PaddleOCR 依赖清单
+### 配置文件
 
-| 包 | 版本 | 用途 |
-|---|---|---|
-| `paddlepaddle` | 3.0.0 | 深度学习推理框架 |
-| `paddleocr` | 2.10.0 | OCR 引擎（中文识别） |
-| `opencv-contrib-python` | 4.13.0.92 | 图像预处理 |
-| `PyMuPDF` | >=1.23.0 | PDF 页面→图像渲染 |
-| `Pillow` | >=10.0 | 图像处理 |
+编辑 [config/ocr_api.yaml](config/ocr_api.yaml)：
 
-### 系统要求
+```yaml
+# API 端点地址
+api_url: "https://aip.baidubce.com/rest/2.0/ocr/v1/general_basic"
 
-| 项目 | 要求 |
-|---|---|
-| **Python** | >=3.10, <=3.13 |
-| **内存** | 建议 >=4GB |
-| **磁盘** | 首次运行自动下载模型（约 50MB） |
-| **CPU** | 支持，默认单线程运行 |
-| **GPU** | 可选（NVIDIA CUDA，自动检测并启用） |
+# API 密钥
+api_key: "your-api-key-here"
 
-### GPU 自动检测
+# 提供商: baidu / aliyun / tencent / custom
+provider: "baidu"
+```
 
-LawToMd 启动时会自动检测设备性能：
-- 检测到 NVIDIA 独立显卡 → PaddleOCR 启用 GPU 加速
-- 无 GPU 或仅有集成显卡 → 以 CPU 模式运行
+### 支持的提供商
 
-可通过 `lawtomd profile` 命令查看检测结果。
+| 提供商 | 说明 |
+|--------|------|
+| `baidu` | 百度 AI 开放平台 — 通用文字识别 |
+| `aliyun` | 阿里云视觉智能 — 文字识别 |
+| `tencent` | 腾讯云 OCR — 通用印刷体识别 |
+| `custom` | 自定义 API 端点，需配置请求/响应模板 |
 
-### Windows 注意事项
-
-- PaddleOCR 底层依赖 `torch` 的 DLL 加载，代码已内置 `_ensure_torch_dll_path()` 自动处理路径
-- 如遇到 DLL 加载失败，可尝试安装 [Visual C++ Redistributable](https://learn.microsoft.com/zh-cn/cpp/windows/latest-downloads)
-- OCR 模型首次启动时需下载缓存，请耐心等待
-
-### 验证 OCR 可用
+### 使用方式
 
 ```bash
-# 查看设备性能检测
-lawtomd profile
+# 1. 编辑 config/ocr_api.yaml 填入 API Key
 
-# 转换时启用自动 OCR 模式
+# 2. 自动 OCR 模式（无文字页面回退到 OCR）
 lawtomd convert 扫描件.pdf --ocr auto
 
 # 强制所有页面使用 OCR
 lawtomd convert 扫描件.pdf --ocr force
 
-# 使用 verbose 查看初始化日志
+# 使用 verbose 查看日志
 lawtomd -vv convert 扫描件.pdf --ocr auto
 ```
 
-初始化成功会看到类似日志：
+### 切换后端
 
-```
-[INFO] src.ocr: OCR 引擎初始化: PaddleOCR (设备性能=high)
-[INFO] src.ocr_paddle: PaddleOCR 引擎初始化完成 (GPU mode)
-```
-
----
-
-## Docker GPU 加速（推荐用于 RTX 50 系列）
-
-针对 NVIDIA RTX 50 系列（Blackwell 架构）显卡，由于 PaddlePaddle 3.x 原生未完全支持 sm120 计算能力，**推荐使用官方 Docker 镜像**进行 GPU 加速。
-
-### 前置要求
-
-| 项目 | 要求 |
-|------|------|
-| **NVIDIA 驱动** | 支持 CUDA 12.9+ |
-| **Docker Desktop** | 已安装并启动 |
-| **NVIDIA Container Toolkit** | Docker Desktop 自带 WSL2 GPU 支持 |
-| **NVIDIA GPU** | RTX 5060/5070/5080/5090 等 Blackwell 架构 |
-
-### 使用流程
-
-**1. 启动 Docker Desktop**
-
-GPU 模式依赖 Docker 容器运行，**必须先启动 Docker Desktop** 才能使用 GPU：
-
-- 开始菜单 → Docker Desktop
-- 等待系统托盘图标变绿（约 30 秒）
-- 可在 Docker Desktop 设置中勾选 `Start Docker Desktop when you sign in` 实现开机自启
-
-**2. 运行 OCR 转换**
-
-#### 方式一：使用便捷脚本（推荐）
-
-将 PDF 文件放入 `input/` 目录后，直接运行：
-
-```powershell
-# 自动处理 input 文件夹下的 PDF
-.\convert-input.ps1
-
-# 指定文件名和输出名
-.\convert-input.ps1 -PdfFile "你的文件.pdf" -Output "结果.md"
-```
-
-输出文件自动保存到 `output/` 目录。
-
-#### 方式二：手动设置环境变量
-
-```powershell
-# 设置输入/输出文件名
-$env:PDF_FILE="你的文件.pdf"
-$env:OUTPUT_FILE="output.md"
-
-# 启动容器进行 OCR（自动使用 GPU）
-docker compose run --rm lawtomd-gpu
-```
-
-**3. 完成后**
-
-- 容器自动退出，GPU 资源自动释放
-- 输出文件保存到 `./output/` 目录
-- 不使用时可关闭 Docker Desktop，不影响日常工作
-
-### 配置说明
-
-| 配置项 | 当前值 | 说明 |
-|--------|--------|------|
-| **镜像** | `paddleocr-vl:latest-nvidia-gpu-sm120` | 官方 Blackwell 专用镜像 |
-| **检测模型** | `PP-OCRv4_server_det` | 高精度文字检测 |
-| **识别模型** | `PP-OCRv4_server_rec` | 高精度文字识别 |
-| **后端** | PaddlePaddle GPU | 自动检测 RTX 5060 |
-
-### 模型版本对比
-
-实测 284 页法律书籍 PDF（RTX 5060）：
-
-| 模型 | 耗时 | 准确率 | 推荐场景 |
-|------|------|--------|---------|
-| **PP-OCRv4 server** | 9 分 20 秒 | ⭐⭐⭐⭐⭐ 最佳 | 准确率优先（推荐） |
-| PP-OCRv5 server | 7 分 59 秒 | ⭐⭐⭐⭐ 良好 | 平衡选择 |
-| PP-OCRv4 mobile | 5 分 11 秒 | ⭐⭐⭐ 一般 | 速度优先 |
-
-### CPU 模式（备选）
-
-如不希望启动 Docker，可使用 CPU 模式：
-
-```powershell
-$env:LAWTOMD_USE_GPU="0"
-$env:PDF_FILE="你的文件.pdf"
-docker compose run --rm lawtomd-gpu
-```
-
-或直接使用本地 Python 环境（不依赖 Docker）：
+通过环境变量控制：
 
 ```bash
-pip install -e ".[ocr]"
-lawtomd convert 你的文件.pdf --ocr force
+# 使用 OCR API 后端（默认）
+lawtomd convert input.pdf --ocr auto
+
+# 禁用 OCR
+lawtomd convert input.pdf --ocr off
 ```
-
-### 优势 vs 劣势
-
-| 方面 | 说明 |
-|------|------|
-| ✅ 优势 | 需要 OCR 时才启动 Docker，平时 GPU 0 占用 |
-| ✅ 优势 | 不污染主机 Python 环境 |
-| ✅ 优势 | 避免 Blackwell 架构 PaddlePaddle 兼容性问题 |
-| ⚠️ 劣势 | 每次需启动 Docker Desktop |
-| ⚠️ 劣势 | 首次拉取镜像约 10GB |
-
-详细使用说明见 [DOCKER.md](./DOCKER.md)。
 
 ---
 
@@ -233,10 +125,16 @@ lawtomd convert 扫描件.pdf --ocr auto
 # 强制所有页面使用 OCR
 lawtomd convert 扫描件.pdf --ocr force
 
-# 批量处理一批法规
+# 输出结构化 JSON
+lawtomd convert 民法典.pdf --format json
+
+# 校验条号连续性
+lawtomd convert 民法典.pdf --validate
+
+# 批量处理一批法规（并行）
 lawtomd batch ./法规目录/ -o ./output/
 
-# 查看设备性能检测
+# 查看设备状态
 lawtomd profile
 ```
 
@@ -265,7 +163,7 @@ lawtomd convert <PDF_PATH> [选项]
 | `--toc` | 不生成 | 在 Markdown 开头生成目录 |
 | `--no-anchor` | 生成 | 不添加 `<!-- anchor -->` 注释 |
 | `--ocr` | `off` | OCR 模式: `auto`=对无文字页面回退, `force`=强制所有页面, `off`=禁用 |
-| `--format` | `markdown` | 输出格式: `markdown` 或 `json` |
+| `--format` | `md` | 输出格式: `md`=Markdown, `json`=结构化JSON |
 | `--validate` | 不校验 | 校验条号连续性，检测缺失条号 |
 
 **示例：**
@@ -308,7 +206,7 @@ lawtomd batch <PDF_DIR> [选项]
 **示例：**
 
 ```bash
-# 批量转换
+# 批量转换（默认并行）
 lawtomd batch ./pdfs/ -o ./output/
 
 # 扁平化输出（所有 .md 在同一目录）
@@ -321,19 +219,19 @@ lawtomd batch ./pdfs/ -o ./output/ --ocr auto
 lawtomd batch ./pdfs/ -o ./output/ --workers 8
 ```
 
-### `profile` — 设备性能检测
+### `profile` — 设备状态检测
 
 ```bash
 lawtomd profile
 ```
 
-检测当前设备的 CPU 核心数、内存容量、GPU 信息，输出性能等级和推荐的 OCR 方案。同时显示各 OCR 后端的安装状态。
+显示当前 OCR API 配置状态和依赖安装情况。
 
 ---
 
 ## 输出格式
 
-每条法规输出一个 `.md` 文件，包含 YAML 元数据头、层级标题、正文和 anchor 注释：
+每条法规输出一个 `.md`（或 `.json`）文件，包含 YAML 元数据头、层级标题、正文和 anchor 注释：
 
 ### 法律法规示例
 
@@ -388,6 +286,30 @@ doc_type: judgment
 二、驳回原告其他诉讼请求...
 ```
 
+### 法律书籍示例
+
+```markdown
+---
+title: 要件审判九步法
+author: 邹碧华
+publisher: 法律出版社
+isbn: 978-7-5118-XXXX-X
+publish_date: 2014年
+source: 要件审判九步法.pdf
+doc_type: book
+---
+
+# 序言
+
+# 第一章 诉讼请求的固定
+
+## 一、诉讼请求的分类
+
+审判实践中，诉讼请求主要分为以下几类……
+
+<small>① 参见《民事诉讼法》第119条。</small>
+```
+
 ---
 
 ## 支持的文档类型
@@ -417,7 +339,7 @@ PDF 文件 ─────→│    extractor.py     │── → LineMeta[]
                 ╰─────────┬───────────╯
                           ↓
                 ╭─────────────────────╮
-                │     builder.py      │── → 完整 Markdown
+                │     builder.py      │── → 完整 Markdown / JSON
                 │ YAML 头 + 标题 +正文 │
                 ╰─────────────────────╯
 ```
@@ -426,17 +348,16 @@ PDF 文件 ─────→│    extractor.py     │── → LineMeta[]
 
 | 模块 | 文件 | 核心职责 |
 |------|------|----------|
-| 数据模型 | `models.py` | LineMeta / LawMeta / JudgmentMeta / HierarchyNode / DocType 定义 |
-| 模式库 | `patterns.py` | 30+ 预编译正则，覆盖编/章/节/条/当事人/裁判结果/法律引用/案号等 |
+| 数据模型 | `models.py` | LineMeta / LawMeta / JudgmentMeta / BookMeta / HierarchyNode / DocType 定义 |
+| 模式库 | `patterns.py` | 30+ 预编译正则，覆盖编/章/节/条/当事人/裁判结果/法律引用/案号/脚注等 |
 | 文本提取 | `extractor.py` | 双策略提取、页眉页脚过滤、OCR 调度、表格提取、文档类型检测 |
 | 文本规范化 | `normalizer.py` | 全角空格统一、OCR 误识别修正、自定义替换规则 |
 | 页眉页脚过滤 | `header_footer.py` | 标准模式 + 自定义签名过滤 |
-| 元数据提取 | `metadata.py` | 法规标题、文号、日期、颁布机关等元数据提取 |
-| 结构识别 | `structure.py` | 多策略解析（法规/判决书）、层级状态机、款缩进检测、子条款归并、引用提取 |
+| 元数据提取 | `metadata.py` | 法规标题、文号、日期、颁布机关；书籍作者/出版社/ISBN 等 |
+| 结构识别 | `structure.py` | 多策略解析（法规/判决书/书籍）、层级状态机、款缩进检测、子条款归并、引用提取 |
 | Markdown 组装 | `builder.py` | YAML 元数据头（文档类型感知）、层级标题映射、anchor + 引用注释、JSON 输出 |
-| OCR 调度器 | `ocr.py` | 统一 OcrEngine 接口，PDF 页面→图像渲染 |
-| PaddleOCR 后端 | `ocr_paddle.py` | PaddleOCR 延迟初始化，GPU 自动检测，坐标转换 |
-| 设备检测 | `profiler.py` | CPU/内存/GPU 检测，GPU 可用性判断 |
+| OCR 调度器 | `ocr.py` | 统一 OcrEngine 单例接口，PDF 页面→图像渲染 |
+| OCR API 后端 | `ocr_api.py` | 第三方 OCR API 调用（百度/阿里云/腾讯云/自定义），YAML 配置驱动 |
 | 类型定义 | `types.py` | OcrBackendProtocol、OcrMode 等公共类型 |
 | CLI 入口 | `main.py` | click 命令组（convert + batch + profile），支持 --format/--validate/--workers 选项 |
 
@@ -446,29 +367,29 @@ PDF 文件 ─────→│    extractor.py     │── → LineMeta[]
 
 ### 层级识别算法
 
-1. **文档类型检测**：根据首页文本自动判断法律法规/判决书/司法解释
-2. **标题检测**：用正则判断文本行属于编/章/节/条（法规）或 当事人/诉讼记录/裁判结果/审判人员（判决书）
+1. **文档类型检测**：根据首页文本自动判断法律法规/判决书/司法解释/法律书籍
+2. **标题检测**：用正则判断文本行属于编/章/节/条（法规）或当事人/诉讼记录/裁判结果/审判人员（判决书）或章节小节（书籍）
 3. **子条款检测**：`（一）`、`1.` 等模式匹配为项/目级别，挂在当前条下
-4. **树构建**：维护一个层级栈，新节点按优先级找到正确父节点
-5. **目录去重**：同标题且无实质内容的节点自动合并
-6. **引用提取**：遍历树节点，提取所有法律引用标注（`《XXX》第X条`）
+4. **款缩进检测**：基于 x0 坐标偏移自动识别条下款（CLAUSE 层级）
+5. **树构建**：维护一个层级栈，新节点按优先级找到正确父节点
+6. **目录去重**：同标题且同层级的节点自动合并
+7. **引用提取**：遍历树节点，提取所有法律引用标注并转为锚点链接
 
 ### OCR 架构
 
 ```
                     OcrEngine (单例)
                    ┌────────────────┐
-                   │ PaddleOCR      │──→ profiler.py 检测 GPU 可用性
-                   │                │    ┌──────────────────────┐
-                   │   GPU 可用?    │──→ │ GPU 加速模式         │
-                   │                │    │                      │
-                   │   仅 CPU?      │──→ │ CPU 模式             │
-                   │                │    └──────────────────────┘
-                   └────────────────┘
+                   │  OCR API 后端   │──→ config/ocr_api.yaml
+                   │                │    ┌──────────────────┐
+                   │  provider?     │──→ │ 百度 / 阿里云     │
+                   │                │    │ 腾讯云 / 自定义   │
+                   └────────────────┘    └──────────────────┘
 ```
 
-- **GPU 自动检测**：启动时自动检测 NVIDIA GPU，有则启用加速
-- **单例模式**：全局复用，避免重复加载模型
+- **单例模式**：全局复用 OcrEngine 实例，延迟初始化
+- **配置驱动**：通过 `config/ocr_api.yaml` 统一管理 API 地址、密钥、请求/响应格式
+- **多提供商**：内置百度/阿里云/腾讯云适配器，支持自定义端点
 
 ### 文本规范化
 
@@ -505,21 +426,20 @@ LawToMd/
 │   ├── extractor.py      # PDF 文本提取 + OCR 调度 + 表格提取
 │   ├── normalizer.py     # 文本规范化（全角空格/OCR 修正/替换规则）
 │   ├── header_footer.py  # 页眉页脚过滤
-│   ├── metadata.py       # 元数据提取（标题/文号/日期/机关）
-│   ├── structure.py      # 结构识别引擎（款缩进检测/引用提取）
+│   ├── metadata.py       # 元数据提取（标题/文号/日期/机关/书籍信息）
+│   ├── structure.py      # 结构识别引擎（款缩进检测/引用提取/书籍解析）
 │   ├── builder.py        # Markdown/JSON 组装
-│   ├── ocr.py            # OCR 引擎调度器（统一接口）
-│   ├── ocr_paddle.py     # PaddleOCR 高性能后端
-│   ├── profiler.py       # 设备性能检测 + GPU 可用性判断
+│   ├── ocr.py            # OCR 引擎调度器（统一接口 + 单例）
+│   ├── ocr_api.py        # 第三方 OCR API 后端（百度/阿里云/腾讯云）
 │   └── types.py          # 公共类型定义（OcrBackendProtocol 等）
 ├── config/
-│   └── replace.yaml      # 常用词替换规则
+│   ├── replace.yaml      # 常用词替换规则
+│   └── ocr_api.yaml      # OCR API 配置（URL/密钥/提供商）
 ├── tests/
 │   ├── conftest.py       # 测试夹具
 │   ├── test_patterns.py  # 模式测试
 │   ├── test_structure.py # 结构测试
 │   ├── test_builder.py   # 构建测试
-│   ├── test_ocr.py       # OCR 测试（需安装 OCR 依赖）
 │   └── test_e2e.py       # 端到端测试
 ├── pyproject.toml
 ├── requirements.txt
@@ -554,5 +474,4 @@ python tests/test_e2e.py
 | `test_patterns.py` | 各级别正则匹配/不匹配、中文数字转换 |
 | `test_structure.py` | 空输入、单条、多级、子条款、收集 |
 | `test_builder.py` | 基础构建、多级、单条、无 anchor |
-| `test_ocr.py` | OCR 转换、引擎初始化、PDF 提取 |
 | `test_e2e.py` | 全流水线：提取→结构→Markdown |

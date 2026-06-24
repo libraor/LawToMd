@@ -23,12 +23,12 @@ class OcrBackendProtocol(Protocol):
 
     @property
     def name(self) -> str:
-        """后端标识名（如 'paddle'）。"""
+        """后端标识名（如 'api'）。"""
         ...
 
     @property
     def display_name(self) -> str:
-        """后端显示名（如 'PaddleOCR (高性能)'）。"""
+        """后端显示名（如 'OCR API (百度)'）。"""
         ...
 
     def ocr_page(

@@ -1,6 +1,6 @@
 """OCR 引擎调度器。
 
-统一使用 PaddleOCR 作为唯一 OCR 后端。
+使用第三方 OCR API 作为 OCR 后端。
 
 公共 API：
     from src.ocr import OcrEngine, pdf_page_to_image, page_has_text, is_available
@@ -12,12 +12,12 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from threading import Lock
 from typing import Optional
 
 from src.models import LineMeta
-from src.profiler import DeviceProfile, detect_device_profile
 
 logger = logging.getLogger(__name__)
 
@@ -34,10 +34,10 @@ _MAX_IMAGE_PIXELS = 4000
 
 
 def is_available() -> bool:
-    """检查 PaddleOCR 是否可用（不触发初始化）。"""
-    from src.ocr_paddle import is_paddle_available
+    """检查 OCR API 是否可用（不触发初始化）。"""
+    from src.ocr_api import is_api_available
 
-    return is_paddle_available()
+    return is_api_available()
 
 
 def page_has_text(page) -> bool:
@@ -50,27 +50,20 @@ def page_has_text(page) -> bool:
 
 
 class OcrEngine:
-    """PaddleOCR 引擎单例封装。
+    """OCR API 引擎单例封装。
 
-    延迟初始化，首次调用 get_instance() 时加载模型。
-    自动检测 GPU 可用性，有 GPU 时启用 GPU 加速。
+    延迟初始化，首次调用 get_instance() 时加载配置。
     """
 
     _instance: Optional["OcrEngine"] = None
 
     def __init__(self) -> None:
         self._backend = None
-        self._profile: Optional[DeviceProfile] = None
 
-        from src.ocr_paddle import PaddleOcrBackend
+        from src.ocr_api import ApiOcrBackend
 
-        self._profile = detect_device_profile()
-        self._backend = PaddleOcrBackend()
-
-        logger.info(
-            "OCR 引擎初始化: PaddleOCR (设备=%s)",
-            self._profile.summary().split("\n")[1].strip() if self._profile else "unknown",
-        )
+        self._backend = ApiOcrBackend()
+        logger.info("OCR 引擎初始化: 第三方 OCR API")
 
     @classmethod
     def get_instance(cls) -> "OcrEngine":
@@ -107,7 +100,7 @@ class OcrEngine:
         min_confidence : float
             最低置信度阈值。
         dpi : int
-            渲染图像时使用的 DPI，用于坐标缩放。
+            渲染图像时使用的 DPI，用于坐标转换。
 
         Returns
         -------
@@ -118,16 +111,16 @@ class OcrEngine:
 
     @property
     def backend_name(self) -> str:
-        return "paddle"
+        return "api"
 
     @property
     def backend_display_name(self) -> str:
-        return "PaddleOCR (高性能)"
+        return getattr(self._backend, "display_name", "OCR API")
 
     @property
-    def profile(self) -> Optional[DeviceProfile]:
-        """设备性能档案。"""
-        return self._profile
+    def profile(self) -> None:
+        """设备性能档案（API 后端不可用）。"""
+        return None
 
 
 # ── PDF 页面 → 图像 ──────────────────────────────────────

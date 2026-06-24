@@ -1,0 +1,46 @@
+# OCR API 配置文件
+# 
+# 支持的提供商: baidu, aliyun, tencent, custom
+# 
+# 使用方式:
+#   1. 设置环境变量 LAWTOMD_OCR_BACKEND=api
+#   2. 修改本配置文件
+#   3. 运行 lawtomd convert input.pdf -o output.md
+
+# API 端点地址
+api_url: "https://aip.baidubce.com/rest/2.0/ocr/v1/general_basic"
+
+# API 密钥（或 Access Token）
+api_key: "your-api-key-here"
+
+# 提供商: baidu / aliyun / tencent / custom
+provider: "baidu"
+
+# 请求超时时间（秒）
+timeout: 30
+
+# 重试次数
+retry: 3
+
+# 自定义请求头
+headers:
+  Content-Type: "application/json"
+
+# 请求模板配置
+request_template:
+  # 图片字段名
+  image_field: "image"
+  # 额外选项
+  options:
+    language_type: "CHN_ENG"
+    detect_direction: "false"
+    detect_language: "false"
+
+# 响应解析配置
+response_parser:
+  # 文本结果字段
+  text_field: "words_result"
+  # 边界框字段
+  bbox_field: "location"
+  # 置信度字段
+  confidence_field: "confidence"

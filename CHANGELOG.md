@@ -5,6 +5,24 @@
 ## [Unreleased]
 
 ### Added
+- 第三方 OCR API 后端支持（`src/ocr_api.py`）：支持百度、阿里云、腾讯云等云端 OCR 服务
+- OCR API 配置文件 `config/ocr_api.yaml`：可配置 API URL、密钥、提供商、请求/响应格式
+- `OcrEngine` 多后端调度器：支持 `paddle`（本地）和 `api`（云端）后端切换
+- 新依赖组 `pip install ".[ocr-api]"`：轻量级 OCR 方案，无需 GPU/大型模型
+
+### Removed
+- **PaddleOCR 本地后端**（`src/ocr_paddle.py`）：移除本地 OCR 模型依赖
+- **设备性能检测模块**（`src/profiler.py`）：不再需要 GPU/CPU 评估
+- **Docker GPU 容器支持**（`docker-compose.yml`、`Dockerfile`、`DOCKER.md`）：移除容器化部署
+- **便捷脚本**（`convert-input.ps1`、`run_ocr.sh`）：Docker 相关脚本不再需要
+
+### Changed
+- OCR 后端默认使用第三方 API，配置文件位于 `config/ocr_api.yaml`
+- `profile` 命令简化为仅显示 OCR API 配置状态
+- `pyproject.toml` 依赖简化：移除 `paddlepaddle`、`paddleocr`、`opencv-contrib-python`
+- `requirements.txt` 更新为 API 依赖
+
+### Added
 - 法律书籍电子化支持（`DocType.BOOK`）：自动检测前言/序言/后记/附录/ISBN/出版社
 - 书籍结构识别：前言→章→节→小节→正文+脚注→附录/后记
 - 脚注检测：基于脚注标记（①②③/[1][2]）和小字号识别

@@ -47,17 +47,6 @@ def cli(verbose: int) -> None:
     )
 
 
-# ── 性能检测展示 ──────────────────────────────────────────
-
-
-def _show_device_profile() -> None:
-    """当使用 OCR 时，展示设备性能检测结果。"""
-    from src.profiler import detect_device_profile
-
-    profile = detect_device_profile()
-    click.echo(profile.summary(), err=True)
-
-
 # ── 单文件转换 ────────────────────────────────────────────
 
 @cli.command()
@@ -101,10 +90,6 @@ def convert(
         output = str(pdf.with_suffix(ext))
 
     click.echo(f"解析: {pdf.name} ...", err=True)
-
-    # 展示设备性能检测和 OCR 方案
-    if ocr != "off":
-        _show_device_profile()
 
     # Step 1: 提取
     lines, meta = extract_pdf(
@@ -196,10 +181,6 @@ def batch(
         return
 
     click.echo(f"批量处理: {len(pdf_files)} 个文件", err=True)
-
-    # 展示设备性能检测和 OCR 方案
-    if ocr != "off":
-        _show_device_profile()
 
     # 构建任务参数
     ext = ".json" if output_format == "json" else ".md"
@@ -306,17 +287,12 @@ def batch(
 
 @cli.command()
 def profile() -> None:
-    """检测设备性能并显示 PaddleOCR 状态。"""
-    from src.profiler import detect_device_profile
+    """检测设备性能并显示 OCR API 状态。"""
     from src.ocr import is_available
 
-    profile_result = detect_device_profile()
-    click.echo(profile_result.summary(), err=True)
-    click.echo("", err=True)
-
-    paddle_ok = is_available()
-    click.echo("PaddleOCR 状态:", err=True)
-    click.echo(f"  {'已安装' if paddle_ok else '未安装 (pip install lawtomd[ocr])'}", err=True)
+    api_ok = is_available()
+    click.echo("OCR API 状态:", err=True)
+    click.echo(f"  {'已配置' if api_ok else '未配置 (pip install lawtomd[ocr])'}", err=True)
 
 
 # ── 辅助 ──────────────────────────────────────────────────
