@@ -33,6 +33,13 @@ logger = logging.getLogger(__name__)
 _PAGE_CHAR_LIMIT = 200_000
 _OCR_BATCH_SIZE = 5
 
+# ── 双栏页面识别与重建 ──────────────────────────────────
+# 法律检索手册等文档常采用双栏排版（左栏条文、右栏规范标注）。
+# 双栏页按阅读顺序重建：先左栏整列 → 中栏标题 → 右栏整列。
+_TWO_COL_GAP_RATIO = 0.05   # 栏间间隙判定：大于页宽此比例视为栏间隙
+_TWO_COL_NARROW = 0.45      # 窄行判定：行宽小于页宽此比例
+_TWO_COL_MULTI_RATIO = 0.6  # 宽行中横跨双栏（含栏间隙）的最低比例
+
 
 def _process_pdf_page(
     page,
@@ -256,11 +263,270 @@ def extract_pdf(
     return lines, meta
 
 
+def _rebuild_two_column_lines(
+    raw_lines: list[dict], page, page_num: int
+) -> Optional[list[LineMeta]]:
+    """若页面为双栏排版，重建为阅读顺序（左栏→中栏→右栏）。
+
+    双栏判定依据：
+    1. 存在足够多的窄行（行宽 < 45% 页宽），且左右两侧各有窄行；
+    2. 宽行（≥45% 页宽）中可被栏间间隙拆分为多段的比例 ≥ 60%。
+
+    重建时宽行按字符 x 间隙拆段，丢弃孤立页码段，段落按
+    其中点 x 归入左/右栏；窄行按整体中点归入左/右/中栏。
+
+    返回 None 表示非双栏页。
+    """
+    rows = [rl for rl in raw_lines if (rl.get("text") or "").strip()]
+    if len(rows) < 10:
+        return None
+    width = float(page.width)
+    if not width:
+        return None
+
+    # 宽行：横跨页面左右两侧的长行
+    wide = [r for r in rows if (r["x1"] - r["x0"]) >= width * _TWO_COL_NARROW]
+    if not wide:
+        return None
+
+    # 双栏判定：宽行中存在"栏间大间隙"（≥5% 页宽）的比例
+    # 单栏正文的宽行内只有词间距（<5% 页宽），不会被误判；
+    # 双栏页的宽行横跨左右栏，栏间隙显著大于词间距。
+    big_gap = width * _TWO_COL_GAP_RATIO
+    big_n = sum(1 for r in wide if _max_char_gap(r.get("chars") or []) >= big_gap)
+    if big_n / len(wide) < _TWO_COL_MULTI_RATIO:
+        return None
+
+    # 拆段聚簇：窄行整行为一段，宽行按大间隙拆段
+    segs: list[tuple[float, float, float]] = []
+    for rl in rows:
+        span = rl["x1"] - rl["x0"]
+        if span < width * _TWO_COL_NARROW:
+            segs.append(((rl["x0"] + rl["x1"]) / 2, rl["x0"], rl["x1"]))
+        else:
+            for seg_text, seg_x0, seg_x1 in _split_chars_by_big_gap(
+                rl.get("chars") or [], big_gap
+            ):
+                if not seg_text:
+                    continue
+                segs.append(((seg_x0 + seg_x1) / 2, seg_x0, seg_x1))
+    if len(segs) < 20:
+        return None
+
+    # k-means(k=2) 求分栏线：两簇中心距足够远且两侧段数均衡
+    centers = [s[0] for s in segs]
+    split, m1, m2 = _kmeans_split(centers)
+    if split is None:
+        return None
+    left_segs = [s for s in segs if s[0] < split]
+    right_segs = [s for s in segs if s[0] >= split]
+    if len(left_segs) < 6 or len(right_segs) < 6:
+        return None
+    if (m2 - m1) < width * 0.15:
+        return None
+
+    left_lines: list[LineMeta] = []
+    center_lines: list[LineMeta] = []
+    right_lines: list[LineMeta] = []
+
+    for rl in rows:
+        text = rl.get("text", "").strip()
+        x0, x1, top = rl["x0"], rl["x1"], rl["top"]
+        bottom = rl.get("bottom", top + 10)
+        chars = rl.get("chars") or []
+        font_size, bold, fontname = _extract_font_info(chars)
+
+        if (x1 - x0) < width * _TWO_COL_NARROW:
+            # 窄行：单栏内容或通栏标题
+            mid = (x0 + x1) / 2
+            if x0 < split < x1:
+                target = center_lines
+            elif mid < split:
+                target = left_lines
+            else:
+                target = right_lines
+            target.append(LineMeta(
+                text=text, page_num=page_num,
+                x0=x0, y0=top, x1=x1, y1=bottom,
+                font_size=font_size, bold=bold, fontname=fontname,
+            ))
+        else:
+            # 宽行：按大间隙拆段，左右栏各归各
+            segs = _split_chars_by_big_gap(chars, width * _TWO_COL_GAP_RATIO)
+            if segs and segs[0][1] < split < segs[0][2]:
+                # 文本横跨分栏线：若行内出现两个条文号，则按第二个条文号切分
+                # （OCR 文本层可能把左右栏字符挤在一起，无足够间隙）
+                article_segs = _split_by_second_article(chars, split)
+                if len(article_segs) >= 2:
+                    segs = article_segs
+            for seg_text, seg_x0, seg_x1 in segs:
+                if not seg_text:
+                    continue
+                # 丢弃孤立页码段（纯数字且很短）
+                if seg_text.isdigit() and len(seg_text) <= 3:
+                    continue
+                seg_mid = (seg_x0 + seg_x1) / 2
+                target = right_lines if seg_mid >= split else left_lines
+                target.append(LineMeta(
+                    text=seg_text, page_num=page_num,
+                    x0=seg_x0, y0=top, x1=seg_x1, y1=bottom,
+                    font_size=font_size, bold=bold, fontname=fontname,
+                ))
+
+    # 各栏内部按 y 排序；最终顺序：左栏 → 中栏 → 右栏
+    left_lines.sort(key=lambda l: l.y0)
+    center_lines.sort(key=lambda l: l.y0)
+    right_lines.sort(key=lambda l: l.y0)
+    result = left_lines + center_lines + right_lines
+
+    # 调整 y0 使 extract_pdf 的全局排序保持栏顺序：
+    # 中栏行偏移一页高、右栏行偏移两页高（相对左栏），
+    # 保证同页内 左栏 < 中栏 < 右栏 完全分离。
+    height = float(page.height) or float(page.bbox[3] - page.bbox[1]) or width
+    for line in center_lines:
+        line.y0 += height
+        line.y1 += height
+    for line in right_lines:
+        line.y0 += height * 2
+        line.y1 += height * 2
+    return result
+
+
+def _kmeans_split(
+    centers: list[float], iters: int = 50
+) -> tuple[Optional[float], float, float]:
+    """k-means(k=2) 聚类，返回 (split, m1, m2)，无法聚类时 split=None。"""
+    if not centers:
+        return None, 0.0, 0.0
+    lo, hi = min(centers), max(centers)
+    if hi - lo < 1e-6:
+        return None, 0.0, 0.0
+    m1, m2 = lo + (hi - lo) * 0.3, lo + (hi - lo) * 0.7
+    for _ in range(iters):
+        g1 = [c for c in centers if abs(c - m1) <= abs(c - m2)]
+        g2 = [c for c in centers if abs(c - m1) > abs(c - m2)]
+        if not g1 or not g2:
+            break
+        n1, n2 = sum(g1) / len(g1), sum(g2) / len(g2)
+        if abs(n1 - m1) < 1e-6 and abs(n2 - m2) < 1e-6:
+            m1, m2 = n1, n2
+            break
+        m1, m2 = n1, n2
+    return (m1 + m2) / 2, m1, m2
+
+
+def _split_by_second_article(
+    chars: list[dict], split: float
+) -> list[tuple[str, float, float]]:
+    """将一行字符按"第二个条文号"切分为两段。
+
+    适用于 OCR 文本层把左右栏字符挤在一起、无足够间隙的情况：
+    此时若行内出现两个"第X条"，则在第二个条文号前切分。
+    若找不到两个条文号，则按 split 切分。
+    """
+    import re
+
+    if not chars:
+        return []
+    sorted_chars = sorted(chars, key=lambda c: c.get("x0", 0))
+    full = "".join(c.get("text", "") for c in sorted_chars)
+    # 找所有条文号在全文中的字符位置
+    positions: list[int] = []
+    for m in re.finditer(r"第\s*\d+\s*条", full):
+        positions.append(m.start())
+    if len(positions) >= 2:
+        cut = positions[1]
+        # 仅当第二个条文号起始位于分栏线右侧时才切分，
+        # 避免误切同一栏内"第X条、第Y条"的并列引用。
+        if cut < len(sorted_chars) and (sorted_chars[cut].get("x0", 0)) >= split:
+            left = sorted_chars[:cut]
+            right = sorted_chars[cut:]
+            out: list[tuple[str, float, float]] = []
+            for group in (left, right):
+                if not group:
+                    continue
+                text = "".join(c.get("text", "") for c in group).strip()
+                if not text:
+                    continue
+                x0 = min(c.get("x0", 0) for c in group)
+                x1 = max(c.get("x1", 0) for c in group)
+                out.append((text, x0, x1))
+            return out
+    return _split_chars_at_split(sorted_chars, split)
+
+
+def _split_chars_at_split(
+    chars: list[dict], split: float
+) -> list[tuple[str, float, float]]:
+    """将一行字符按分栏线切分为左右两段，返回 (text, x0, x1)。"""
+    if not chars:
+        return []
+    left_chars = [c for c in chars if (c.get("x0", 0) + c.get("x1", 0)) / 2 < split]
+    right_chars = [c for c in chars if (c.get("x0", 0) + c.get("x1", 0)) / 2 >= split]
+    out: list[tuple[str, float, float]] = []
+    for group in (left_chars, right_chars):
+        if not group:
+            continue
+        text = "".join(c.get("text", "") for c in group).strip()
+        if not text:
+            continue
+        x0 = min(c.get("x0", 0) for c in group)
+        x1 = max(c.get("x1", 0) for c in group)
+        out.append((text, x0, x1))
+    return out
+
+
+def _max_char_gap(chars: list[dict]) -> float:
+    """一行字符中相邻字符的最大 x 间隙（pt）。"""
+    if not chars:
+        return 0.0
+    sorted_chars = sorted(chars, key=lambda c: c.get("x0", 0))
+    mx = 0.0
+    prev_x1 = sorted_chars[0].get("x1", 0)
+    for c in sorted_chars[1:]:
+        g = c.get("x0", 0) - prev_x1
+        if g > mx:
+            mx = g
+        prev_x1 = c.get("x1", 0)
+    return mx
+
+
+def _split_chars_by_big_gap(
+    chars: list[dict], big_gap: float
+) -> list[tuple[str, float, float]]:
+    """将一行字符按栏间大间隙拆分为多段，返回 (text, x0, x1)。
+
+    仅在大间隙（栏间隙）处切分，词间距不会被误拆。
+    """
+    if not chars:
+        return []
+    sorted_chars = sorted(chars, key=lambda c: c.get("x0", 0))
+    segments: list[list[dict]] = []
+    cur = [sorted_chars[0]]
+    for c in sorted_chars[1:]:
+        if c.get("x0", 0) - cur[-1].get("x1", 0) > big_gap:
+            segments.append(cur)
+            cur = [c]
+        else:
+            cur.append(c)
+    segments.append(cur)
+
+    out: list[tuple[str, float, float]] = []
+    for seg in segments:
+        text = "".join(c.get("text", "") for c in seg).strip()
+        if not text:
+            continue
+        x0 = min(c.get("x0", 0) for c in seg)
+        x1 = max(c.get("x1", 0) for c in seg)
+        out.append((text, x0, x1))
+    return out
+
+
 def _extract_page_lines(page, page_num: int) -> list[LineMeta]:
     """从 pdfplumber Page 对象中提取行。
 
-    策略：取 page.extract_words() 再按 y0 聚合成行，
-    同时保留每行的 x0/x1 范围。
+    策略：优先提取文本行；若页面为双栏排版，按阅读顺序重建
+    （左栏 → 中栏标题 → 右栏），否则按原顺序返回。
     """
     page_lines: list[LineMeta] = []
 
@@ -271,6 +537,10 @@ def _extract_page_lines(page, page_num: int) -> list[LineMeta]:
                 strip=True,
                 keep_blank_chars=False,
             )
+            # 双栏页面按阅读顺序重建
+            rebuilt = _rebuild_two_column_lines(raw_lines, page, page_num)
+            if rebuilt is not None:
+                return rebuilt
             for rl in raw_lines:
                 text = rl.get("text", "").strip()
                 if not text:
